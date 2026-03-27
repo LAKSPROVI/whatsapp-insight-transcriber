@@ -1,0 +1,91 @@
+# ─── Python ───────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# ─── Virtual Environment ──────────────────────────────────────
+venv/
+env/
+ENV/
+.venv/
+.env
+*.env
+!backend/.env.example
+
+# ─── Database ─────────────────────────────────────────────────
+*.db
+*.sqlite
+*.sqlite3
+
+# ─── Uploads e Mídias (dados do usuário) ─────────────────────
+backend/uploads/
+backend/media/
+uploads/
+media/
+
+# ─── Node.js ──────────────────────────────────────────────────
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# ─── Next.js ──────────────────────────────────────────────────
+frontend/.next/
+frontend/out/
+frontend/.vercel
+
+# ─── Logs ─────────────────────────────────────────────────────
+*.log
+logs/
+*.log.*
+
+# ─── IDE ──────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# ─── OS ───────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ─── Docker ───────────────────────────────────────────────────
+.docker/
+
+# ─── Misc ─────────────────────────────────────────────────────
+*.pid
+*.seed
+*.pid.lock
+coverage/
+.coverage
+.nyc_output/
+htmlcov/
+.pytest_cache/
+.cache/
+*.tmp
+*.bak

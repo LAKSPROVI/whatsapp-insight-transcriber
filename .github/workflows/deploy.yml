@@ -1,0 +1,130 @@
+name: 🚀 Deploy to Hetzner
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      force_rebuild:
+        description: 'Forçar rebuild completo'
+        required: false
+        default: 'false'
+        type: boolean
+
+env:
+  HETZNER_HOST: 77.42.68.212
+  HETZNER_USER: root
+  APP_DIR: /opt/whatsapp-insight-transcriber
+
+jobs:
+  deploy:
+    name: Deploy to Hetzner VPS
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      # ─── Checkout ──────────────────────────────────────────────
+      - name: 📥 Checkout código
+        uses: actions/checkout@v4
+
+      # ─── Configurar SSH ────────────────────────────────────────
+      - name: 🔑 Configurar SSH
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.HETZNER_SSH_KEY }}
+
+      - name: 📋 Adicionar host ao known_hosts
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H ${{ env.HETZNER_HOST }} >> ~/.ssh/known_hosts
+
+      # ─── Verificar Servidor ────────────────────────────────────
+      - name: 🔍 Verificar conexão SSH
+        run: |
+          ssh ${{ env.HETZNER_USER }}@${{ env.HETZNER_HOST }} "echo '✅ SSH OK' && uname -a && docker --version && docker compose version"
+
+      # ─── Enviar Código via rsync ───────────────────────────────
+      - name: 📤 Sincronizar código para o servidor
+        run: |
+          rsync -avz --delete \
+            --exclude='.git' \
+            --exclude='node_modules' \
+            --exclude='.next' \
+            --exclude='__pycache__' \
+            --exclude='*.pyc' \
+            --exclude='venv' \
+            --exclude='.env' \
+            --exclude='uploads/' \
+            --exclude='media/' \
+            --exclude='*.db' \
+            ./ ${{ env.HETZNER_USER }}@${{ env.HETZNER_HOST }}:${{ env.APP_DIR }}/
+
+      # ─── Configurar .env no servidor ──────────────────────────
+      - name: ⚙️ Configurar variáveis de ambiente
+        run: |
+          ssh ${{ env.HETZNER_USER }}@${{ env.HETZNER_HOST }} << 'EOF'
+            cd ${{ env.APP_DIR }}
+            
+            # Criar .env se não existir
+            if [ ! -f .env ]; then
+              echo "ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}" > .env
+              echo "ANTHROPIC_BASE_URL=${{ secrets.ANTHROPIC_BASE_URL || 'http://localhost:1337' }}" >> .env
+              echo "CLAUDE_MODEL=claude-opus-4-6" >> .env
+              echo "MAX_AGENTS=20" >> .env
+              echo "DATABASE_URL=sqlite+aiosqlite:///./data/whatsapp_insight.db" >> .env
+              echo "UPLOAD_DIR=/app/data/uploads" >> .env
+              echo "MEDIA_DIR=/app/data/media" >> .env
+              echo "DEBUG=false" >> .env
+              echo "SECRET_KEY=${{ secrets.SECRET_KEY }}" >> .env
+              echo "ALLOWED_ORIGINS=[\"http://${{ env.HETZNER_HOST }}\",\"http://${{ env.HETZNER_HOST }}:3000\"]" >> .env
+              echo "✅ .env criado"
+            else
+              # Atualizar apenas a API key
+              sed -i "s/^ANTHROPIC_API_KEY=.*/ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}/" .env
+              echo "✅ .env atualizado"
+            fi
+          EOF
+
+      # ─── Deploy com Docker Compose ────────────────────────────
+      - name: 🐳 Fazer deploy com Docker Compose
+        run: |
+          ssh ${{ env.HETZNER_USER }}@${{ env.HETZNER_HOST }} << 'EOF'
+            set -e
+            cd ${{ env.APP_DIR }}
+            
+            echo "📦 Criando diretórios de dados..."
+            mkdir -p data/uploads data/media
+            
+            echo "🔨 Buildando imagens Docker..."
+            docker compose build --no-cache
+            
+            echo "🚀 Iniciando containers..."
+            docker compose up -d --remove-orphans
+            
+            echo "⏳ Aguardando health check..."
+            sleep 15
+            
+            # Verificar saúde dos containers
+            docker compose ps
+            
+            # Testar backend
+            curl -f http://localhost:8000/api/health && echo "✅ Backend OK" || echo "⚠️ Backend ainda iniciando..."
+            
+            echo "🎉 Deploy concluído!"
+          EOF
+
+      # ─── Verificação Final ────────────────────────────────────
+      - name: ✅ Verificação final
+        run: |
+          sleep 10
+          curl -f http://${{ env.HETZNER_HOST }}:8000/api/health && echo "✅ Backend respondendo!" || echo "⚠️ Backend pode estar ainda iniciando"
+          echo "🌐 Frontend: http://${{ env.HETZNER_HOST }}:3000"
+          echo "📚 API Docs: http://${{ env.HETZNER_HOST }}:8000/api/docs"
+
+      # ─── Notificação de Falha ─────────────────────────────────
+      - name: ❌ Deploy falhou
+        if: failure()
+        run: |
+          echo "Deploy falhou! Verifique os logs acima."
+          ssh ${{ env.HETZNER_USER }}@${{ env.HETZNER_HOST }} "cd ${{ env.APP_DIR }} && docker compose logs --tail=50" || true
