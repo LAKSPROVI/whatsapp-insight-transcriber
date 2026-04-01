@@ -64,8 +64,14 @@ class Settings(BaseSettings):
         env="ALLOWED_ORIGINS"
     )
 
-    # ─── Redis (opcional, para queue distribuída) ─────────────
-    REDIS_URL: Optional[str] = Field(default=None, env="REDIS_URL")
+    # ─── Redis / Cache ───────────────────────────────────────────
+    REDIS_URL: Optional[str] = Field(default="redis://redis:6379/0", env="REDIS_URL")
+    CACHE_TTL_SECONDS: int = Field(default=86400, env="CACHE_TTL_SECONDS")  # 24h
+    CACHE_ENABLED: bool = Field(default=True, env="CACHE_ENABLED")
+
+    # ─── Logging ─────────────────────────────────────────────────
+    LOG_LEVEL: str = Field(default="INFO", env="LOG_LEVEL")
+    LOG_FORMAT: str = Field(default="json", env="LOG_FORMAT")  # json ou console
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", case_sensitive=True)
 

@@ -17,7 +17,10 @@ services:
       - UPLOAD_DIR=/app/data/uploads
       - MEDIA_DIR=/app/data/media
       - DEBUG=${DEBUG:-false}
-      - ALLOWED_ORIGINS=["http://localhost:3000","http://localhost:3020","http://frontend:3000","http://77.42.68.212:3020","https://transcriber.jurislaw.com.br"]
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-admin}
+      - SECRET_KEY=${SECRET_KEY:-default-secret-key}
+      - ALLOWED_ORIGINS=["http://localhost:3000","http://localhost:3020","http://localhost","http://frontend:3000","http://77.42.68.212:3020","http://77.42.68.212","https://transcriber.jurislaw.com.br"]
     volumes:
       - wit_data:/app/data
     extra_hosts:
@@ -41,14 +44,16 @@ services:
     environment:
       - NEXT_PUBLIC_API_URL=
       - BACKEND_URL=http://backend:8000
+      - HOSTNAME=0.0.0.0
     depends_on:
       backend:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000"]
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:3000"]
       interval: 30s
       timeout: 10s
-      retries: 3
+      retries: 5
+      start_period: 30s
 
 volumes:
   wit_data:

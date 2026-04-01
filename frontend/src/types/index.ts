@@ -204,6 +204,34 @@ export interface ExportOptions {
   include_statistics: boolean;
 }
 
+// ─── Authentication ──────────────────────────────────────────────────────────
+
+export interface LoginRequest {
+  username: string;
+  password: string;
+}
+
+export interface RegisterRequest {
+  username: string;
+  password: string;
+}
+
+export interface LoginResponse {
+  access_token: string;
+  token_type: string;
+}
+
+export interface RegisterResponse {
+  id: string;
+  username: string;
+  message: string;
+}
+
+export interface User {
+  id: string;
+  username: string;
+}
+
 // ─── UI State ─────────────────────────────────────────────────────────────────
 
 export type AppView = "home" | "processing" | "conversation" | "history";

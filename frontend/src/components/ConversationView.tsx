@@ -1,19 +1,21 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   ArrowLeft, MessageSquare, BarChart2, FileDown,
-  Search, Filter, ChevronDown, Cpu, ExternalLink,
-  Loader2, RefreshCw, Users, Calendar, Clock
+  Search, Loader2, RefreshCw, Users, ChevronDown
 } from "lucide-react";
-import { getConversation, getMessages } from "@/lib/api";
+import { useVirtualizer } from "@tanstack/react-virtual";
+import { useConversation, useMessages } from "@/lib/queries";
+import { getMessages } from "@/lib/api";
 import type { Conversation, Message } from "@/types";
 import { MessageBubble } from "@/components/MessageBubble";
 import { ChatPanel } from "@/components/ChatPanel";
 import { AnalyticsPanel } from "@/components/AnalyticsPanel";
 import { ExportPanel } from "@/components/ExportPanel";
-import { cn, formatDate, formatDateShort, getSentimentEmoji, getSentimentColor, getSentimentColorHex } from "@/lib/utils";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { cn, getSentimentEmoji, getSentimentColorHex } from "@/lib/utils";
 
 interface ConversationViewProps {
   conversationId: string;
@@ -23,80 +25,138 @@ interface ConversationViewProps {
 type SidePanel = "none" | "chat" | "analytics" | "export";
 
 export function ConversationView({ conversationId, onBack }: ConversationViewProps) {
-  const [conversation, setConversation] = useState<Conversation | null>(null);
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [allMessages, setAllMessages] = useState<Message[]>([]);
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(true);
   const [sidePanel, setSidePanel] = useState<SidePanel>("none");
   const [searchQuery, setSearchQuery] = useState("");
   const [filterSender, setFilterSender] = useState<string | null>(null);
-  const [showFilters, setShowFilters] = useState(false);
-  const messagesContainerRef = useRef<HTMLDivElement>(null);
+  const [showScrollToBottom, setShowScrollToBottom] = useState(false);
+  const parentRef = useRef<HTMLDivElement>(null);
   const PAGE_SIZE = 100;
 
-  const loadMessages = useCallback(
-    async (skip = 0, append = false) => {
-      try {
-        const msgs = await getMessages(
-          conversationId,
-          skip,
-          PAGE_SIZE,
-          false,
-          filterSender || undefined
-        );
+  // React Query para dados da conversa
+  const { data: conversation, isLoading: convLoading } = useConversation(conversationId);
 
-        if (append) {
-          setMessages((prev) => [...prev, ...msgs]);
-        } else {
-          setMessages(msgs);
-        }
-        setHasMore(msgs.length === PAGE_SIZE);
-      } catch (err) {
-        console.error("Erro ao carregar mensagens:", err);
-      }
-    },
-    [conversationId, filterSender]
+  // React Query para primeira página de mensagens
+  const { data: initialMessages, isLoading: msgsLoading } = useMessages(
+    conversationId,
+    0,
+    PAGE_SIZE,
+    filterSender || undefined,
+    !!conversationId
   );
 
-  // Effect 1: Carregar dados da conversa (só quando conversationId muda)
-  useEffect(() => {
-    if (conversationId) {
-      setLoading(true);
-      getConversation(conversationId)
-        .then((conv) => {
-          if (conv) setConversation(conv);
-        })
-        .catch((err) => console.error("Erro ao carregar conversa:", err));
-    }
-  }, [conversationId]);
+  const loading = convLoading || msgsLoading;
 
-  // Effect 2: Carregar mensagens (quando conversationId ou filtro/loadMessages muda)
+  // Sincronizar mensagens iniciais
   useEffect(() => {
-    if (conversationId) {
-      loadMessages(0, false).finally(() => setLoading(false));
+    if (initialMessages) {
+      setAllMessages(initialMessages);
+      setHasMore(initialMessages.length === PAGE_SIZE);
     }
-  }, [conversationId, loadMessages]);
+  }, [initialMessages]);
 
-  const loadMore = async () => {
+  // Reset quando filtro muda
+  useEffect(() => {
+    setAllMessages([]);
+  }, [filterSender]);
+
+  const loadMore = useCallback(async () => {
     if (loadingMore || !hasMore) return;
     setLoadingMore(true);
-    await loadMessages(messages.length, true);
+    try {
+      const msgs = await getMessages(
+        conversationId,
+        allMessages.length,
+        PAGE_SIZE,
+        false,
+        filterSender || undefined
+      );
+      setAllMessages((prev) => [...prev, ...msgs]);
+      setHasMore(msgs.length === PAGE_SIZE);
+    } catch (err) {
+      console.error("Erro ao carregar mais mensagens:", err);
+    }
     setLoadingMore(false);
-  };
+  }, [conversationId, allMessages.length, filterSender, loadingMore, hasMore]);
 
-  const filteredMessages = searchQuery
-    ? messages.filter((m) => {
-        const searchLower = searchQuery.toLowerCase();
-        return (
-          m.original_text?.toLowerCase().includes(searchLower) ||
-          m.transcription?.toLowerCase().includes(searchLower) ||
-          m.description?.toLowerCase().includes(searchLower) ||
-          m.ocr_text?.toLowerCase().includes(searchLower) ||
-          m.sender.toLowerCase().includes(searchLower)
-        );
-      })
-    : messages;
+  // Filtro de busca
+  const filteredMessages = useMemo(() => {
+    if (!searchQuery) return allMessages;
+    const searchLower = searchQuery.toLowerCase();
+    return allMessages.filter((m) =>
+      m.original_text?.toLowerCase().includes(searchLower) ||
+      m.transcription?.toLowerCase().includes(searchLower) ||
+      m.description?.toLowerCase().includes(searchLower) ||
+      m.ocr_text?.toLowerCase().includes(searchLower) ||
+      m.sender.toLowerCase().includes(searchLower)
+    );
+  }, [allMessages, searchQuery]);
+
+  // Agrupar mensagens por data para exibição virtual
+  const virtualItems = useMemo(() => {
+    const items: Array<{ type: "date"; date: string } | { type: "message"; message: Message }> = [];
+    let currentDate = "";
+    for (const msg of filteredMessages) {
+      try {
+        const msgDate = new Date(msg.timestamp).toLocaleDateString("pt-BR");
+        if (msgDate !== currentDate) {
+          currentDate = msgDate;
+          items.push({ type: "date", date: msgDate });
+        }
+      } catch {
+        if (items.length === 0) {
+          items.push({ type: "date", date: "—" });
+        }
+      }
+      items.push({ type: "message", message: msg });
+    }
+    return items;
+  }, [filteredMessages]);
+
+  // Virtualizer
+  const virtualizer = useVirtualizer({
+    count: virtualItems.length + (hasMore ? 1 : 0), // +1 for load more button
+    getScrollElement: () => parentRef.current,
+    estimateSize: (index) => {
+      if (index >= virtualItems.length) return 50; // load more button
+      const item = virtualItems[index];
+      return item.type === "date" ? 40 : 80;
+    },
+    overscan: 20,
+  });
+
+  // Detectar scroll position para "scroll to bottom"
+  const handleScroll = useCallback(() => {
+    const el = parentRef.current;
+    if (!el) return;
+    const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    setShowScrollToBottom(distFromBottom > 300);
+  }, []);
+
+  useEffect(() => {
+    const el = parentRef.current;
+    if (!el) return;
+    el.addEventListener("scroll", handleScroll, { passive: true });
+    return () => el.removeEventListener("scroll", handleScroll);
+  }, [handleScroll]);
+
+  const scrollToBottom = useCallback(() => {
+    const el = parentRef.current;
+    if (el) {
+      el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+    }
+  }, []);
+
+  // Auto-scroll quando novas mensagens chegam
+  const prevMessageCount = useRef(0);
+  useEffect(() => {
+    if (allMessages.length > prevMessageCount.current && !showScrollToBottom) {
+      scrollToBottom();
+    }
+    prevMessageCount.current = allMessages.length;
+  }, [allMessages.length, showScrollToBottom, scrollToBottom]);
 
   if (loading) {
     return (
@@ -244,12 +304,11 @@ export function ConversationView({ conversationId, onBack }: ConversationViewPro
           )}
         </AnimatePresence>
 
-        {/* Messages */}
+        {/* Virtualized Messages */}
         <div
-          ref={messagesContainerRef}
-          className="flex-1 overflow-y-auto px-4 py-4 space-y-0.5"
+          ref={parentRef}
+          className="flex-1 overflow-y-auto px-4 py-4"
         >
-          {/* Group messages by date */}
           {filteredMessages.length === 0 ? (
             <div className="flex items-center justify-center h-full">
               <div className="text-center text-gray-500">
@@ -260,38 +319,117 @@ export function ConversationView({ conversationId, onBack }: ConversationViewPro
               </div>
             </div>
           ) : (
-            <>
-              <DateGroupedMessages
-                messages={filteredMessages}
-                conversationId={conversationId}
-                participants={conversation.participants || []}
-              />
+            <div
+              style={{
+                height: `${virtualizer.getTotalSize()}px`,
+                width: "100%",
+                position: "relative",
+              }}
+            >
+              {virtualizer.getVirtualItems().map((virtualRow) => {
+                const index = virtualRow.index;
 
-              {/* Load More */}
-              {hasMore && (
-                <div className="flex justify-center py-4">
-                  <button
-                    onClick={loadMore}
-                    disabled={loadingMore}
-                    className="flex items-center gap-2 px-4 py-2 rounded-xl bg-dark-700 hover:bg-dark-600 text-gray-400 hover:text-gray-200 text-sm transition-all"
+                // Load more button
+                if (index >= virtualItems.length) {
+                  return (
+                    <div
+                      key="load-more"
+                      style={{
+                        position: "absolute",
+                        top: 0,
+                        left: 0,
+                        width: "100%",
+                        height: `${virtualRow.size}px`,
+                        transform: `translateY(${virtualRow.start}px)`,
+                      }}
+                    >
+                      <div className="flex justify-center py-4">
+                        <button
+                          onClick={loadMore}
+                          disabled={loadingMore}
+                          className="flex items-center gap-2 px-4 py-2 rounded-xl bg-dark-700 hover:bg-dark-600 text-gray-400 hover:text-gray-200 text-sm transition-all"
+                        >
+                          {loadingMore ? (
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                          ) : (
+                            <RefreshCw className="w-4 h-4" />
+                          )}
+                          Carregar mais mensagens
+                        </button>
+                      </div>
+                    </div>
+                  );
+                }
+
+                const item = virtualItems[index];
+
+                if (item.type === "date") {
+                  return (
+                    <div
+                      key={`date-${item.date}`}
+                      style={{
+                        position: "absolute",
+                        top: 0,
+                        left: 0,
+                        width: "100%",
+                        height: `${virtualRow.size}px`,
+                        transform: `translateY(${virtualRow.start}px)`,
+                      }}
+                    >
+                      <div className="flex items-center gap-3 py-3">
+                        <div className="flex-1 h-px bg-dark-500/30" />
+                        <span className="text-[10px] text-gray-600 px-2 py-0.5 rounded-full bg-dark-700/50 border border-dark-500/20">
+                          {item.date}
+                        </span>
+                        <div className="flex-1 h-px bg-dark-500/30" />
+                      </div>
+                    </div>
+                  );
+                }
+
+                return (
+                  <div
+                    key={item.message.id}
+                    style={{
+                      position: "absolute",
+                      top: 0,
+                      left: 0,
+                      width: "100%",
+                      transform: `translateY(${virtualRow.start}px)`,
+                    }}
                   >
-                    {loadingMore ? (
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                    ) : (
-                      <RefreshCw className="w-4 h-4" />
-                    )}
-                    Carregar mais mensagens
-                  </button>
-                </div>
-              )}
-            </>
+                    <MessageBubble
+                      message={item.message}
+                      conversationId={conversationId}
+                      participants={conversation.participants || []}
+                    />
+                  </div>
+                );
+              })}
+            </div>
           )}
         </div>
+
+        {/* Scroll to bottom indicator */}
+        <AnimatePresence>
+          {showScrollToBottom && (
+            <motion.button
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 10 }}
+              onClick={scrollToBottom}
+              className="absolute bottom-6 right-6 z-20 w-10 h-10 rounded-full bg-brand-500 hover:bg-brand-400 text-white shadow-brand flex items-center justify-center transition-colors"
+              style={{ position: "fixed", bottom: 24, right: sidePanel !== "none" ? 424 : 24 }}
+            >
+              <ChevronDown className="w-5 h-5" />
+            </motion.button>
+          )}
+        </AnimatePresence>
       </div>
 
       {/* Side Panels */}
       <AnimatePresence>
-        {sidePanel !== "none" && (
+        {sidePanel !== "none" && sidePanel !== "chat" && (
           <motion.div
             key={sidePanel}
             initial={{ x: 400, opacity: 0 }}
@@ -302,81 +440,28 @@ export function ConversationView({ conversationId, onBack }: ConversationViewPro
           >
             <div className="p-4">
               {sidePanel === "analytics" && (
-                <AnalyticsPanel conversation={conversation} />
+                <ErrorBoundary>
+                  <AnalyticsPanel conversation={conversation} />
+                </ErrorBoundary>
               )}
               {sidePanel === "export" && (
-                <ExportPanel conversationId={conversationId} />
+                <ErrorBoundary>
+                  <ExportPanel conversationId={conversationId} />
+                </ErrorBoundary>
               )}
             </div>
           </motion.div>
         )}
       </AnimatePresence>
 
-      {/* Chat Panel (separate component with its own state) */}
-      <ChatPanel
-        conversationId={conversationId}
-        isOpen={sidePanel === "chat"}
-        onClose={() => setSidePanel("none")}
-      />
+      {/* Chat Panel */}
+      <ErrorBoundary>
+        <ChatPanel
+          conversationId={conversationId}
+          isOpen={sidePanel === "chat"}
+          onClose={() => setSidePanel("none")}
+        />
+      </ErrorBoundary>
     </div>
-  );
-}
-
-// ─── Date Grouped Messages ─────────────────────────────────────────────────────
-function DateGroupedMessages({
-  messages,
-  conversationId,
-  participants,
-}: {
-  messages: Message[];
-  conversationId: string;
-  participants: string[];
-}) {
-  const grouped: { date: string; messages: Message[] }[] = [];
-  let currentDate = "";
-
-  for (const msg of messages) {
-    try {
-      const msgDate = new Date(msg.timestamp).toLocaleDateString("pt-BR");
-      if (msgDate !== currentDate) {
-        currentDate = msgDate;
-        grouped.push({ date: msgDate, messages: [msg] });
-      } else {
-        grouped[grouped.length - 1].messages.push(msg);
-      }
-    } catch {
-      if (grouped.length === 0) {
-        grouped.push({ date: "—", messages: [msg] });
-      } else {
-        grouped[grouped.length - 1].messages.push(msg);
-      }
-    }
-  }
-
-  return (
-    <>
-      {grouped.map(({ date, messages: dayMsgs }) => (
-        <div key={date}>
-          {/* Date Divider */}
-          <div className="flex items-center gap-3 py-3">
-            <div className="flex-1 h-px bg-dark-500/30" />
-            <span className="text-[10px] text-gray-600 px-2 py-0.5 rounded-full bg-dark-700/50 border border-dark-500/20">
-              {date}
-            </span>
-            <div className="flex-1 h-px bg-dark-500/30" />
-          </div>
-
-          {/* Messages */}
-          {dayMsgs.map((msg) => (
-            <MessageBubble
-              key={msg.id}
-              message={msg}
-              conversationId={conversationId}
-              participants={participants}
-            />
-          ))}
-        </div>
-      ))}
-    </>
   );
 }

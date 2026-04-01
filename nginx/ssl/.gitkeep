@@ -1,0 +1,3 @@
+# Este diretório é para certificados SSL.
+# Coloque seus arquivos cert.pem e key.pem aqui.
+# Depois descomente as linhas SSL no nginx.conf.

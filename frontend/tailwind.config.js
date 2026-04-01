@@ -9,6 +9,16 @@ module.exports = {
   theme: {
     extend: {
       colors: {
+        // Theme-aware colors via CSS variables
+        "theme-bg": "var(--bg-primary)",
+        "theme-bg2": "var(--bg-secondary)",
+        "theme-bg3": "var(--bg-tertiary)",
+        "theme-card": "var(--bg-card)",
+        "theme-text": "var(--text-primary)",
+        "theme-text2": "var(--text-secondary)",
+        "theme-muted": "var(--text-muted)",
+        "theme-border": "var(--border)",
+        "theme-border-strong": "var(--border-strong)",
         // Paleta futurista
         brand: {
           50: "#f0eeff",

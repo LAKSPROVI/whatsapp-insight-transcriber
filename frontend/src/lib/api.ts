@@ -7,33 +7,222 @@ import type {
   ChatHistoryResponse,
   ConversationAnalytics,
   ExportOptions,
+  LoginRequest,
+  LoginResponse,
+  RegisterRequest,
+  RegisterResponse,
 } from "@/types";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "";
 
-async function apiFetch<T>(path: string, init?: RequestInit, timeoutMs = 60000): Promise<T> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+// ─── APIError ───────────────────────────────────────────────────────────────
 
-  try {
-    const res = await fetch(`${API_BASE}${path}`, {
-      ...init,
-      signal: init?.signal || controller.signal,
-    });
-    clearTimeout(timeout);
+export class APIError extends Error {
+  status: number;
+  statusText: string;
+  data: string;
 
-    if (!res.ok) {
-      const body = await res.text().catch(() => "");
-      throw new Error(`API ${res.status}: ${body}`);
-    }
-    return res.json();
-  } catch (err: any) {
-    clearTimeout(timeout);
-    if (err.name === "AbortError") {
-      throw new Error("Tempo limite excedido. Verifique sua conexão e tente novamente.");
-    }
-    throw err;
+  constructor(status: number, statusText: string, data: string) {
+    const message = getHTTPErrorMessage(status, data);
+    super(message);
+    this.name = "APIError";
+    this.status = status;
+    this.statusText = statusText;
+    this.data = data;
   }
+}
+
+function getHTTPErrorMessage(status: number, data: string): string {
+  switch (status) {
+    case 400:
+      return `Requisição inválida: ${data || "verifique os dados enviados."}`;
+    case 401:
+      return "Sessão expirada. Faça login novamente.";
+    case 403:
+      return "Acesso negado. Você não tem permissão para esta ação.";
+    case 404:
+      return "Recurso não encontrado.";
+    case 409:
+      return data.includes("already exists") ? "Este recurso já existe." : `Conflito: ${data}`;
+    case 413:
+      return "Arquivo muito grande para o servidor processar.";
+    case 422:
+      return `Dados inválidos: ${data || "verifique os campos."}`;
+    case 429:
+      return "Muitas requisições. Aguarde um momento e tente novamente.";
+    case 500:
+      return "Erro interno do servidor. Tente novamente em instantes.";
+    case 502:
+      return "Servidor indisponível. Tente novamente em instantes.";
+    case 503:
+      return "Serviço temporariamente indisponível. Tente novamente em instantes.";
+    case 504:
+      return "O servidor demorou para responder. Tente novamente.";
+    default:
+      return `Erro do servidor (${status}): ${data || "erro desconhecido."}`;
+  }
+}
+
+// ─── Token Management ───────────────────────────────────────────────────────
+
+const TOKEN_KEY = "wit_auth_token";
+
+export function setToken(token: string): void {
+  if (typeof window !== "undefined") {
+    localStorage.setItem(TOKEN_KEY, token);
+  }
+}
+
+export function getToken(): string | null {
+  if (typeof window !== "undefined") {
+    return localStorage.getItem(TOKEN_KEY);
+  }
+  return null;
+}
+
+export function removeToken(): void {
+  if (typeof window !== "undefined") {
+    localStorage.removeItem(TOKEN_KEY);
+  }
+}
+
+export function isAuthenticated(): boolean {
+  return !!getToken();
+}
+
+// ─── Auth Redirect ──────────────────────────────────────────────────────────
+
+let onUnauthorized: (() => void) | null = null;
+
+export function setOnUnauthorized(callback: () => void): void {
+  onUnauthorized = callback;
+}
+
+// ─── Core Fetch with Retry ──────────────────────────────────────────────────
+
+function authHeaders(init?: RequestInit): RequestInit {
+  const token = getToken();
+  const headers = new Headers(init?.headers);
+  if (token) {
+    headers.set("Authorization", `Bearer ${token}`);
+  }
+  return { ...init, headers };
+}
+
+const DEFAULT_TIMEOUT = 30_000;
+const PROCESSING_TIMEOUT = 120_000;
+const MAX_RETRIES = 3;
+const RETRY_BASE_DELAY = 1000;
+
+function isRetryableStatus(status: number): boolean {
+  return status >= 500 && status <= 599;
+}
+
+async function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function apiFetch<T>(
+  path: string,
+  init?: RequestInit,
+  timeoutMs: number = DEFAULT_TIMEOUT,
+  retries: number = MAX_RETRIES
+): Promise<T> {
+  let lastError: Error | null = null;
+
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+      const opts = authHeaders(init);
+      const res = await fetch(`${API_BASE}${path}`, {
+        ...opts,
+        signal: init?.signal ?? controller.signal,
+      });
+      clearTimeout(timeout);
+
+      if (res.status === 401) {
+        removeToken();
+        onUnauthorized?.();
+        throw new APIError(401, res.statusText, "");
+      }
+
+      if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        const apiError = new APIError(res.status, res.statusText, body);
+
+        // Retry apenas para erros 5xx
+        if (isRetryableStatus(res.status) && attempt < retries) {
+          lastError = apiError;
+          const delay = RETRY_BASE_DELAY * Math.pow(2, attempt);
+          console.warn(
+            `[API] Retry ${attempt + 1}/${retries} para ${path} após ${delay}ms (status ${res.status})`
+          );
+          await sleep(delay);
+          continue;
+        }
+
+        throw apiError;
+      }
+
+      return res.json() as Promise<T>;
+    } catch (err: unknown) {
+      clearTimeout(timeout);
+
+      if (err instanceof APIError) {
+        throw err;
+      }
+
+      const error = err instanceof Error ? err : new Error(String(err));
+
+      if (error.name === "AbortError") {
+        throw new Error("Tempo limite excedido. Verifique sua conexão e tente novamente.");
+      }
+
+      // Retry para erros de rede
+      if (attempt < retries && error.message.includes("fetch")) {
+        lastError = error;
+        const delay = RETRY_BASE_DELAY * Math.pow(2, attempt);
+        console.warn(
+          `[API] Retry ${attempt + 1}/${retries} para ${path} após ${delay}ms (erro de rede)`
+        );
+        await sleep(delay);
+        continue;
+      }
+
+      throw error;
+    }
+  }
+
+  throw lastError ?? new Error("Erro inesperado na requisição.");
+}
+
+// ─── Authentication ─────────────────────────────────────────────────────────
+
+export async function login(username: string, password: string): Promise<LoginResponse> {
+  const body: LoginRequest = { username, password };
+  const res = await apiFetch<LoginResponse>("/api/auth/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  setToken(res.access_token);
+  return res;
+}
+
+export async function register(username: string, password: string): Promise<RegisterResponse> {
+  const body: RegisterRequest = { username, password };
+  return apiFetch<RegisterResponse>("/api/auth/register", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export function logout(): void {
+  removeToken();
+  onUnauthorized?.();
 }
 
 // ─── Conversations ──────────────────────────────────────────────────────────
@@ -41,15 +230,21 @@ async function apiFetch<T>(path: string, init?: RequestInit, timeoutMs = 60000):
 export async function uploadConversation(file: File): Promise<UploadResponse> {
   const form = new FormData();
   form.append("file", file);
-  // Timeout maior para upload de arquivos grandes (5 minutos)
-  return apiFetch<UploadResponse>("/api/conversations/upload", {
-    method: "POST",
-    body: form,
-  }, 300000);
+  // Timeout maior para upload de arquivos grandes (5 minutos), sem retry
+  return apiFetch<UploadResponse>(
+    "/api/conversations/upload",
+    { method: "POST", body: form },
+    300_000,
+    0
+  );
 }
 
 export async function getProgress(sessionId: string): Promise<ProcessingProgress> {
-  return apiFetch<ProcessingProgress>(`/api/conversations/progress/${sessionId}`);
+  return apiFetch<ProcessingProgress>(
+    `/api/conversations/progress/${sessionId}`,
+    undefined,
+    DEFAULT_TIMEOUT
+  );
 }
 
 export async function listConversations(
@@ -100,20 +295,36 @@ export function createChatStream(
 
   (async () => {
     try {
+      const token = getToken();
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (token) {
+        headers["Authorization"] = `Bearer ${token}`;
+      }
+
       const res = await fetch(
         `${API_BASE}/api/chat/${conversationId}/message`,
         {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers,
           body: JSON.stringify({ message }),
           signal: controller.signal,
         }
       );
 
-      if (!res.ok) throw new Error(`Chat API ${res.status}`);
+      if (res.status === 401) {
+        removeToken();
+        onUnauthorized?.();
+        onError?.(new APIError(401, "Unauthorized", ""));
+        return;
+      }
+
+      if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        throw new APIError(res.status, res.statusText, body);
+      }
 
       const reader = res.body?.getReader();
-      if (!reader) throw new Error("No reader");
+      if (!reader) throw new Error("Resposta sem corpo de dados.");
 
       const decoder = new TextDecoder();
       while (true) {
@@ -122,9 +333,10 @@ export function createChatStream(
         onChunk(decoder.decode(value, { stream: true }));
       }
       onDone();
-    } catch (err: any) {
-      if (err.name !== "AbortError") {
-        onError?.(err);
+    } catch (err: unknown) {
+      const error = err instanceof Error ? err : new Error(String(err));
+      if (error.name !== "AbortError") {
+        onError?.(error);
       }
     }
   })();
@@ -154,7 +366,9 @@ export async function getAnalytics(
   conversationId: string
 ): Promise<ConversationAnalytics> {
   return apiFetch<ConversationAnalytics>(
-    `/api/chat/${conversationId}/analytics`
+    `/api/chat/${conversationId}/analytics`,
+    undefined,
+    PROCESSING_TIMEOUT
   );
 }
 
@@ -164,27 +378,47 @@ export async function exportConversation(
   conversationId: string,
   options: ExportOptions
 ): Promise<void> {
+  const token = getToken();
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
+  }
+
   const res = await fetch(
     `${API_BASE}/api/conversations/${conversationId}/export`,
     {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers,
       body: JSON.stringify(options),
     }
   );
-  if (!res.ok) throw new Error(`Export failed: ${res.status}`);
+
+  if (res.status === 401) {
+    removeToken();
+    onUnauthorized?.();
+    throw new APIError(401, "Unauthorized", "");
+  }
+
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new APIError(res.status, res.statusText, body);
+  }
 
   const contentType = res.headers.get("content-type") || "";
   let blob: Blob;
 
   if (contentType.includes("application/json")) {
-    const data = await res.json();
+    const data: { download_url?: string } = await res.json();
     if (data.download_url) {
-      const fileRes = await fetch(data.download_url);
-      if (!fileRes.ok) throw new Error("Failed to download file");
+      const fileHeaders: Record<string, string> = {};
+      if (token) {
+        fileHeaders["Authorization"] = `Bearer ${token}`;
+      }
+      const fileRes = await fetch(data.download_url, { headers: fileHeaders });
+      if (!fileRes.ok) throw new Error("Falha ao baixar o arquivo exportado.");
       blob = await fileRes.blob();
     } else {
-      throw new Error("Invalid export response");
+      throw new Error("Resposta de exportação inválida.");
     }
   } else {
     blob = await res.blob();

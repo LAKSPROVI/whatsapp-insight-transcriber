@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { motion } from "framer-motion";
 import { FileDown, FileText, FileType2, Settings2, Loader2, CheckCircle2 } from "lucide-react";
-import { exportConversation } from "@/lib/api";
+import { useExportConversation } from "@/lib/queries";
 import type { ExportOptions } from "@/types";
 import { cn } from "@/lib/utils";
 import toast from "react-hot-toast";
@@ -20,28 +20,29 @@ export function ExportPanel({ conversationId }: ExportPanelProps) {
     include_summary: true,
     include_statistics: true,
   });
-  const [isExporting, setIsExporting] = useState(false);
   const [exported, setExported] = useState(false);
 
+  const exportMutation = useExportConversation();
+
   const handleExport = async () => {
-    setIsExporting(true);
     setExported(false);
 
     try {
-      await exportConversation(conversationId, options);
+      await exportMutation.mutateAsync({ conversationId, options });
       setExported(true);
       toast.success(`Exportado como ${options.format.toUpperCase()} com sucesso!`);
       setTimeout(() => setExported(false), 3000);
-    } catch (err: any) {
-      toast.error(`Erro ao exportar: ${err.message}`);
-    } finally {
-      setIsExporting(false);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      toast.error(`Erro ao exportar: ${message}`);
     }
   };
 
   const toggle = (key: keyof ExportOptions) => {
     setOptions((prev) => ({ ...prev, [key]: !prev[key] }));
   };
+
+  const isExporting = exportMutation.isPending;
 
   return (
     <div className="glass rounded-2xl p-5 space-y-5">

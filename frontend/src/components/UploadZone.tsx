@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useState } from "react";
-import { useDropzone } from "react-dropzone";
+import { useDropzone, type FileRejection } from "react-dropzone";
 import { motion, AnimatePresence } from "framer-motion";
 import { Upload, Zap, FileArchive, CheckCircle2, AlertCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -17,7 +17,7 @@ export function UploadZone({ onUpload, isUploading = false }: UploadZoneProps) {
   const [error, setError] = useState<string | null>(null);
 
   const onDrop = useCallback(
-    (acceptedFiles: File[], rejectedFiles: any[]) => {
+    (acceptedFiles: File[], rejectedFiles: FileRejection[]) => {
       setError(null);
 
       if (rejectedFiles.length > 0) {
@@ -54,7 +54,7 @@ export function UploadZone({ onUpload, isUploading = false }: UploadZoneProps) {
   return (
     <div className="w-full max-w-2xl mx-auto">
       <motion.div
-        {...getRootProps()}
+        {...(getRootProps() as React.ComponentProps<typeof motion.div>)}
         initial={{ opacity: 0, scale: 0.95 }}
         animate={{ opacity: 1, scale: 1 }}
         whileHover={{ scale: isUploading ? 1 : 1.01 }}

@@ -90,3 +90,4 @@ htmlcov/
 .cache/
 *.tmp
 *.bak
+frontend/tsconfig.tsbuildinfo

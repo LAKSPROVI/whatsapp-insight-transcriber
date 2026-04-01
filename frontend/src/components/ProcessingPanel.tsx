@@ -94,9 +94,9 @@ export function ProcessingPanel({ progress, sessionId }: ProcessingPanelProps) {
         {(progress?.total_messages ?? 0) > 0 && (
           <div className="grid grid-cols-3 gap-3 mt-4">
             {[
-              { label: "Mensagens", value: progress.total_messages, icon: "💬" },
-              { label: "Processadas", value: progress.processed_messages, icon: "✅" },
-              { label: "Agentes Ativos", value: progress.active_agents, icon: "🤖" },
+              { label: "Mensagens", value: progress?.total_messages ?? 0, icon: "💬" },
+              { label: "Processadas", value: progress?.processed_messages ?? 0, icon: "✅" },
+              { label: "Agentes Ativos", value: progress?.active_agents ?? 0, icon: "🤖" },
             ].map((stat) => (
               <div key={stat.label} className="bg-dark-600/50 rounded-xl p-3 text-center">
                 <span className="text-lg">{stat.icon}</span>

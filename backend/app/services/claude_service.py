@@ -1,6 +1,7 @@
 """
 Serviço de integração com Claude API (via gameron proxy)
-Responsável por todas as chamadas de IA: transcrição, visão, RAG, análise
+Responsável por todas as chamadas de IA: transcrição, visão, RAG, análise.
+Inclui retry com exponential backoff, rate limiting, timeout configurável.
 """
 import base64
 import logging
@@ -11,19 +12,41 @@ import shutil
 import subprocess
 import tempfile
 import functools
+import time
 from pathlib import Path
 from typing import Optional, List, Dict, Any, AsyncIterator
 
 import anthropic
 from app.config import settings
+from app.exceptions import APIError, RateLimitError
+from app.services.cache_service import cached, make_cache_key, get_cached_result, set_cached_result
 
 logger = logging.getLogger(__name__)
+
+# ─── Timeouts por tipo de operação (segundos) ────────────────────────────────
+OPERATION_TIMEOUTS: Dict[str, float] = {
+    "transcribe_audio": 90.0,
+    "describe_image": 60.0,
+    "transcribe_video": 180.0,
+    "analyze_sentiment": 30.0,
+    "generate_summary": 90.0,
+    "detect_contradictions": 90.0,
+    "extract_keywords": 60.0,
+    "chat": 120.0,
+    "default": 60.0,
+}
+
+# ─── Configuração de retry ───────────────────────────────────────────────────
+MAX_RETRIES = 4
+BACKOFF_BASE = 1.0
+BACKOFF_MULTIPLIER = 2.0
+RATE_LIMIT_INITIAL_WAIT = 5.0  # segundos
 
 
 class ClaudeService:
     """
-    Serviço central de IA usando Claude Opus 4.6 via gameron
-    Todas as chamadas são assíncronas e otimizadas para paralelismo
+    Serviço central de IA usando Claude via proxy.
+    Todas as chamadas são assíncronas e otimizadas para paralelismo.
     """
 
     def __init__(self):
@@ -33,34 +56,152 @@ class ClaudeService:
         )
         self.model = settings.CLAUDE_MODEL
         self.max_tokens = settings.MAX_TOKENS
-        # Fix 5: Cache do modelo Whisper (lazy load)
+        # Cache do modelo Whisper (lazy load)
         self._whisper_model = None
-        # Fix 6: Semáforo para limitar chamadas simultâneas à API
+        # Semáforo para limitar chamadas simultâneas à API
         self._api_semaphore = asyncio.Semaphore(10)
+        # Contadores para monitoramento
+        self._total_calls = 0
+        self._total_errors = 0
+        self._total_retries = 0
+        self._rate_limit_hits = 0
 
-    async def _call_claude_with_retry(self, **kwargs) -> Any:
+    async def _call_claude_with_retry(
+        self,
+        operation: str = "default",
+        **kwargs,
+    ) -> Any:
         """
-        Wrapper com retry e semáforo para chamadas à API Claude.
-        3 tentativas com backoff exponencial (1s, 2s, 4s).
+        Wrapper com retry, exponential backoff e rate limit handling.
         """
-        max_retries = 3
-        backoff_times = [1, 2, 4]
+        timeout = OPERATION_TIMEOUTS.get(operation, OPERATION_TIMEOUTS["default"])
 
         async with self._api_semaphore:
-            for attempt in range(max_retries):
+            last_error = None
+
+            for attempt in range(MAX_RETRIES):
                 try:
-                    return await self.client.messages.create(**kwargs)
-                except Exception as e:
-                    if attempt < max_retries - 1:
-                        wait_time = backoff_times[attempt]
+                    self._total_calls += 1
+                    result = await asyncio.wait_for(
+                        self.client.messages.create(**kwargs),
+                        timeout=timeout,
+                    )
+                    return result
+
+                except asyncio.TimeoutError:
+                    last_error = f"Timeout ({timeout}s) na operação '{operation}'"
+                    logger.warning(
+                        f"Timeout na chamada API (tentativa {attempt + 1}/{MAX_RETRIES}): {operation}",
+                        extra={"operation": operation, "attempt": attempt + 1, "timeout": timeout},
+                    )
+
+                except anthropic.RateLimitError as e:
+                    self._rate_limit_hits += 1
+                    # Rate limit: esperar mais tempo com backoff
+                    wait_time = RATE_LIMIT_INITIAL_WAIT * (BACKOFF_MULTIPLIER ** attempt)
+
+                    # Tentar extrair retry-after do header se disponível
+                    retry_after = getattr(e, "retry_after", None)
+                    if retry_after:
+                        wait_time = max(wait_time, float(retry_after))
+
+                    last_error = f"Rate limit (429): {str(e)}"
+                    logger.warning(
+                        f"Rate limit atingido (tentativa {attempt + 1}/{MAX_RETRIES}). "
+                        f"Aguardando {wait_time:.1f}s antes de retry...",
+                        extra={
+                            "operation": operation,
+                            "attempt": attempt + 1,
+                            "wait_time": wait_time,
+                            "rate_limit_total": self._rate_limit_hits,
+                        },
+                    )
+
+                    if attempt < MAX_RETRIES - 1:
+                        await asyncio.sleep(wait_time)
+                        self._total_retries += 1
+                        continue
+                    else:
+                        self._total_errors += 1
+                        raise RateLimitError(
+                            detail="Limite de requisições da API excedido. Tente novamente em alguns minutos.",
+                            context={
+                                "operation": operation,
+                                "attempts": attempt + 1,
+                                "rate_limit_hits": self._rate_limit_hits,
+                            },
+                        )
+
+                except anthropic.APIStatusError as e:
+                    status = getattr(e, "status_code", 0)
+                    last_error = f"API status {status}: {str(e)}"
+
+                    # Erros 5xx são transientes
+                    if status >= 500 and attempt < MAX_RETRIES - 1:
+                        wait_time = BACKOFF_BASE * (BACKOFF_MULTIPLIER ** attempt)
                         logger.warning(
-                            f"Tentativa {attempt + 1}/{max_retries} falhou: {e}. "
-                            f"Retentando em {wait_time}s..."
+                            f"Erro de servidor API {status} (tentativa {attempt + 1}/{MAX_RETRIES}). "
+                            f"Retry em {wait_time:.1f}s...",
+                            extra={"operation": operation, "status": status, "attempt": attempt + 1},
                         )
                         await asyncio.sleep(wait_time)
+                        self._total_retries += 1
+                        continue
                     else:
-                        logger.error(f"Todas as {max_retries} tentativas falharam: {e}")
-                        raise
+                        self._total_errors += 1
+                        raise APIError(
+                            detail=f"Erro na API de IA (HTTP {status}): {str(e)}",
+                            context={"operation": operation, "status_code": status, "attempts": attempt + 1},
+                        )
+
+                except anthropic.APIConnectionError as e:
+                    last_error = f"Erro de conexão: {str(e)}"
+                    if attempt < MAX_RETRIES - 1:
+                        wait_time = BACKOFF_BASE * (BACKOFF_MULTIPLIER ** attempt)
+                        logger.warning(
+                            f"Erro de conexão API (tentativa {attempt + 1}/{MAX_RETRIES}). "
+                            f"Retry em {wait_time:.1f}s...",
+                            extra={"operation": operation, "attempt": attempt + 1},
+                        )
+                        await asyncio.sleep(wait_time)
+                        self._total_retries += 1
+                        continue
+
+                except Exception as e:
+                    last_error = str(e)
+                    self._total_errors += 1
+                    logger.error(
+                        f"Erro inesperado na chamada API: {e}",
+                        extra={"operation": operation, "attempt": attempt + 1},
+                        exc_info=True,
+                    )
+
+                    if attempt < MAX_RETRIES - 1:
+                        wait_time = BACKOFF_BASE * (BACKOFF_MULTIPLIER ** attempt)
+                        await asyncio.sleep(wait_time)
+                        self._total_retries += 1
+                        continue
+                    else:
+                        raise APIError(
+                            detail=f"Erro na comunicação com serviço de IA: {str(e)}",
+                            context={"operation": operation, "attempts": attempt + 1},
+                        )
+
+            # Todas as tentativas falharam
+            self._total_errors += 1
+            raise APIError(
+                detail=f"Falha após {MAX_RETRIES} tentativas: {last_error}",
+                context={"operation": operation, "attempts": MAX_RETRIES},
+            )
+
+    def get_stats(self) -> Dict[str, Any]:
+        """Retorna estatísticas de uso da API."""
+        return {
+            "total_calls": self._total_calls,
+            "total_errors": self._total_errors,
+            "total_retries": self._total_retries,
+            "rate_limit_hits": self._rate_limit_hits,
+        }
 
     async def transcribe_audio(
         self,
@@ -69,7 +210,7 @@ class ClaudeService:
     ) -> Dict[str, Any]:
         """
         Transcreve um arquivo de áudio.
-        Fix 1: Usa Whisper como método primário. Se falhar, envia descrição textual ao Claude.
+        Usa Whisper como método primário. Se falhar, envia descrição textual ao Claude.
         """
         path = Path(file_path)
         if not path.exists():
@@ -79,8 +220,8 @@ class ClaudeService:
         try:
             transcription_raw = await self._whisper_transcribe(file_path)
             if transcription_raw:
-                # Refinamento com Claude
                 message = await self._call_claude_with_retry(
+                    operation="transcribe_audio",
                     model=self.model,
                     max_tokens=2048,
                     messages=[{
@@ -97,6 +238,8 @@ Responda apenas com a transcrição corrigida."""
                     "transcription": message.content[0].text.strip(),
                     "tokens_used": message.usage.input_tokens + message.usage.output_tokens,
                 }
+        except (APIError, RateLimitError):
+            raise
         except Exception as e:
             logger.warning(f"Whisper falhou, usando fallback textual: {e}")
 
@@ -113,6 +256,7 @@ Metadados do arquivo:
 """
 
         message = await self._call_claude_with_retry(
+            operation="transcribe_audio",
             model=self.model,
             max_tokens=self.max_tokens,
             messages=[
@@ -148,15 +292,14 @@ Responda com: [Áudio recebido - transcrição via Whisper indisponível. {metad
         Versão alternativa que usa whisper/ffmpeg para extrair texto primeiro,
         depois manda para Claude formatar
         """
-        # Tentar transcrição com whisper se disponível
         try:
             transcription_raw = await self._whisper_transcribe(file_path)
         except Exception:
             transcription_raw = None
 
         if transcription_raw:
-            # Refinamento com Claude
             message = await self._call_claude_with_retry(
+                operation="transcribe_audio",
                 model=self.model,
                 max_tokens=2048,
                 messages=[{
@@ -174,7 +317,7 @@ Responda apenas com a transcrição corrigida."""
                 "tokens_used": message.usage.input_tokens + message.usage.output_tokens,
             }
 
-        # Fallback: indicar que áudio recebido mas não transcrito
+        # Fallback
         return {
             "transcription": "[Áudio recebido - transcrição pendente de configuração do Whisper]",
             "tokens_used": 0,
@@ -184,11 +327,9 @@ Responda apenas com a transcrição corrigida."""
         """Tenta transcrição via OpenAI Whisper local"""
         try:
             import whisper
-            # Fix 5: Lazy load do modelo Whisper com cache
             if self._whisper_model is None:
                 logger.info("Carregando modelo Whisper (primeira vez)...")
                 self._whisper_model = whisper.load_model("base")
-            # Fix 4: asyncio.get_running_loop() em vez de get_event_loop()
             loop = asyncio.get_running_loop()
             result = await loop.run_in_executor(None, self._whisper_model.transcribe, file_path)
             return result["text"]
@@ -228,6 +369,7 @@ Responda apenas com a transcrição corrigida."""
         media_type = media_type_map.get(ext, "image/jpeg")
 
         message = await self._call_claude_with_retry(
+            operation="describe_image",
             model=self.model,
             max_tokens=2048,
             messages=[{
@@ -263,7 +405,6 @@ Responda APENAS com o JSON, sem texto adicional."""
         try:
             result = json.loads(message.content[0].text.strip())
         except json.JSONDecodeError:
-            # Fallback se não for JSON válido
             text = message.content[0].text.strip()
             result = {
                 "description": text,
@@ -292,7 +433,6 @@ Responda APENAS com o JSON, sem texto adicional."""
         path = Path(file_path)
         frame_results = []
 
-        # Extrair frames do vídeo
         frames, frames_dir = await self._extract_video_frames(file_path, max_frames=5)
 
         try:
@@ -303,13 +443,11 @@ Responda APENAS com o JSON, sem texto adicional."""
                 except Exception as e:
                     logger.warning(f"Erro ao processar frame: {e}")
                 finally:
-                    # Limpar frame temporário
                     try:
                         os.remove(frame_path)
                     except Exception:
                         pass
         finally:
-            # Fix 3: Limpar diretório temporário de frames
             if frames_dir:
                 shutil.rmtree(frames_dir, ignore_errors=True)
 
@@ -333,6 +471,7 @@ Responda APENAS com o JSON, sem texto adicional."""
         duration = media_metadata.get("duration_formatted", "desconhecida") if media_metadata else "desconhecida"
 
         message = await self._call_claude_with_retry(
+            operation="transcribe_video",
             model=self.model,
             max_tokens=2048,
             messages=[{
@@ -386,13 +525,12 @@ Responda APENAS com o JSON."""
 
             cmd = [
                 "ffmpeg", "-i", video_path,
-                "-vf", f"fps=1/5,scale=640:-1",  # 1 frame a cada 5 segundos
+                "-vf", f"fps=1/5,scale=640:-1",
                 "-frames:v", str(max_frames),
                 f"{output_dir}/frame_%03d.jpg",
                 "-y", "-loglevel", "quiet"
             ]
 
-            # Fix 2: Executar subprocess em executor para não bloquear event loop
             loop = asyncio.get_running_loop()
             result = await loop.run_in_executor(
                 None,
@@ -413,7 +551,6 @@ Responda APENAS com o JSON."""
     async def _extract_audio_from_video(self, video_path: str) -> Optional[str]:
         """Extrai a faixa de áudio de um vídeo"""
         try:
-            # Fix 7: Usar NamedTemporaryFile em vez de mktemp inseguro
             tmp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
             output_path = tmp_file.name
             tmp_file.close()
@@ -426,7 +563,6 @@ Responda APENAS com o JSON."""
                 "-y", "-loglevel", "quiet"
             ]
 
-            # Fix 2: Executar subprocess em executor para não bloquear event loop
             loop = asyncio.get_running_loop()
             result = await loop.run_in_executor(
                 None,
@@ -435,7 +571,6 @@ Responda APENAS com o JSON."""
             if result.returncode == 0 and os.path.exists(output_path):
                 return output_path
             else:
-                # Limpar arquivo se ffmpeg falhou
                 try:
                     os.remove(output_path)
                 except Exception:
@@ -451,7 +586,15 @@ Responda APENAS com o JSON."""
         context: str = ""
     ) -> Dict[str, Any]:
         """Analisa o sentimento de uma mensagem ou bloco de texto"""
+        cache_key = make_cache_key(f"sentiment:{text}:{context}", prefix="wit:sentiment")
+        cached_result = await get_cached_result(cache_key)
+        if cached_result is not None:
+            logger.debug("Cache HIT para analyze_sentiment")
+            return cached_result
+
+        logger.debug("Cache MISS para analyze_sentiment — chamando API")
         message = await self._call_claude_with_retry(
+            operation="analyze_sentiment",
             model=self.model,
             max_tokens=512,
             messages=[{
@@ -478,10 +621,13 @@ Responda APENAS com o JSON."""
         except json.JSONDecodeError:
             result = {"sentiment": "neutral", "score": 0.0, "emotions": [], "confidence": 0.5}
 
-        return {
+        sentiment_result = {
             **result,
             "tokens_used": message.usage.input_tokens + message.usage.output_tokens,
+            "cached": False,
         }
+        await set_cached_result(cache_key, sentiment_result)
+        return sentiment_result
 
     async def generate_summary(
         self,
@@ -489,14 +635,21 @@ Responda APENAS com o JSON."""
         participants: List[str] = None
     ) -> Dict[str, Any]:
         """Gera um resumo executivo da conversa"""
+        cache_key = make_cache_key(conversation_text, prefix="wit:summary")
+        cached_result = await get_cached_result(cache_key)
+        if cached_result is not None:
+            logger.debug("Cache HIT para generate_summary")
+            return cached_result
+
+        logger.debug("Cache MISS para generate_summary — chamando API")
         participants_str = ", ".join(participants) if participants else "participantes"
 
-        # Fix 8: Log de truncamento silencioso
         limit = 15000
         if len(conversation_text) > limit:
             logger.warning(f"Texto truncado de {len(conversation_text)} para {limit} caracteres em generate_summary")
 
         message = await self._call_claude_with_retry(
+            operation="generate_summary",
             model=self.model,
             max_tokens=2048,
             messages=[{
@@ -536,23 +689,32 @@ Responda APENAS com o JSON."""
                 "relationship_dynamic": "",
             }
 
-        return {
+        summary_result = {
             **result,
             "tokens_used": message.usage.input_tokens + message.usage.output_tokens,
         }
+        await set_cached_result(cache_key, summary_result)
+        return summary_result
 
     async def detect_contradictions(
         self,
         conversation_text: str
     ) -> Dict[str, Any]:
         """Detecta contradições e inconsistências na conversa"""
+        cache_key = make_cache_key(conversation_text, prefix="wit:contradictions")
+        cached_result = await get_cached_result(cache_key)
+        if cached_result is not None:
+            logger.debug("Cache HIT para detect_contradictions")
+            return cached_result
 
-        # Fix 8: Log de truncamento silencioso
+        logger.debug("Cache MISS para detect_contradictions — chamando API")
+
         limit = 12000
         if len(conversation_text) > limit:
             logger.warning(f"Texto truncado de {len(conversation_text)} para {limit} caracteres em detect_contradictions")
 
         message = await self._call_claude_with_retry(
+            operation="detect_contradictions",
             model=self.model,
             max_tokens=2048,
             messages=[{
@@ -592,23 +754,24 @@ Responda APENAS com o JSON."""
         except json.JSONDecodeError:
             result = {"contradictions": [], "position_changes": [], "has_contradictions": False}
 
-        return {
+        contradiction_result = {
             **result,
             "tokens_used": message.usage.input_tokens + message.usage.output_tokens,
         }
+        await set_cached_result(cache_key, contradiction_result)
+        return contradiction_result
 
     async def extract_keywords(
         self,
         conversation_text: str
     ) -> Dict[str, Any]:
         """Extrai palavras-chave, tópicos e dados para nuvem de palavras"""
-
-        # Fix 8: Log de truncamento silencioso
         limit = 10000
         if len(conversation_text) > limit:
             logger.warning(f"Texto truncado de {len(conversation_text)} para {limit} caracteres em extract_keywords")
 
         message = await self._call_claude_with_retry(
+            operation="extract_keywords",
             model=self.model,
             max_tokens=1024,
             messages=[{
@@ -655,7 +818,6 @@ Responda APENAS com o JSON."""
         Chat RAG com streaming.
         O usuário pode fazer perguntas sobre a conversa transcrita.
         """
-        # Fix 8: Log de truncamento silencioso
         limit = 20000
         if len(conversation_context) > limit:
             logger.warning(f"Contexto truncado de {len(conversation_context)} para {limit} caracteres em chat_with_context")
@@ -671,9 +833,8 @@ Quando referenciar momentos específicos da conversa, cite a data/hora e o parti
 
         messages = []
 
-        # Adicionar histórico do chat
         if chat_history:
-            for msg in chat_history[-10:]:  # Últimas 10 mensagens
+            for msg in chat_history[-10:]:
                 messages.append({
                     "role": msg["role"],
                     "content": msg["content"]
@@ -681,15 +842,25 @@ Quando referenciar momentos específicos da conversa, cite a data/hora e o parti
 
         messages.append({"role": "user", "content": user_message})
 
-        # Streaming response
-        async with self.client.messages.stream(
-            model=self.model,
-            max_tokens=2048,
-            system=system_prompt,
-            messages=messages,
-        ) as stream:
-            async for text in stream.text_stream:
-                yield text
+        try:
+            async with self.client.messages.stream(
+                model=self.model,
+                max_tokens=2048,
+                system=system_prompt,
+                messages=messages,
+            ) as stream:
+                async for text in stream.text_stream:
+                    yield text
+        except anthropic.RateLimitError as e:
+            self._rate_limit_hits += 1
+            logger.warning(f"Rate limit no chat streaming: {e}")
+            yield "\n\n⚠️ Limite de requisições atingido. Aguarde alguns instantes e tente novamente."
+        except anthropic.APIStatusError as e:
+            logger.error(f"Erro na API durante chat streaming: {e}")
+            yield f"\n\n⚠️ Erro na comunicação com o serviço de IA (HTTP {getattr(e, 'status_code', 'desconhecido')})."
+        except Exception as e:
+            logger.error(f"Erro inesperado no chat streaming: {e}", exc_info=True)
+            yield "\n\n⚠️ Ocorreu um erro inesperado. Tente novamente."
 
     async def build_vector_store(
         self,
@@ -698,10 +869,7 @@ Quando referenciar momentos específicos da conversa, cite a data/hora e o parti
     ) -> Dict[str, Any]:
         """
         Indexa a conversa para busca semântica RAG.
-        Retorna informações sobre o índice criado.
         """
-        # Implementação simplificada: criamos um índice em memória
-        # Em produção, usaríamos ChromaDB, Pinecone ou similar
         indexed_count = len(messages)
         return {
             "conversation_id": conversation_id,

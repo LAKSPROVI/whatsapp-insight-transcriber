@@ -4,9 +4,11 @@ import { useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Send, Bot, User, Trash2, Sparkles, X,
-  MessageSquare, ChevronDown
+  MessageSquare
 } from "lucide-react";
-import { createChatStream, getChatHistory, clearChatHistory } from "@/lib/api";
+import { createChatStream } from "@/lib/api";
+import { useAppStore } from "@/lib/store";
+import { useChatHistory, useClearChatHistory } from "@/lib/queries";
 import type { ChatMessage } from "@/types";
 import { cn } from "@/lib/utils";
 
@@ -26,7 +28,13 @@ const QUICK_QUESTIONS = [
 ];
 
 export function ChatPanel({ conversationId, isOpen, onClose }: ChatPanelProps) {
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const {
+    chatMessages,
+    setChatMessages,
+    addChatMessage,
+    clearChatMessages,
+  } = useAppStore();
+
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [streamingText, setStreamingText] = useState("");
@@ -35,22 +43,22 @@ export function ChatPanel({ conversationId, isOpen, onClose }: ChatPanelProps) {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const abortRef = useRef<(() => void) | null>(null);
 
-  // Carregar histórico
+  // React Query para carregar histórico
+  const { data: historyData } = useChatHistory(conversationId, isOpen);
+  const clearHistoryMutation = useClearChatHistory();
+
+  // Sincronizar histórico do React Query com store
   useEffect(() => {
-    if (isOpen && conversationId) {
-      getChatHistory(conversationId)
-        .then((data) => {
-          setMessages(data.messages);
-          if (data.messages.length > 0) setShowQuestions(false);
-        })
-        .catch(console.error);
+    if (historyData && isOpen) {
+      setChatMessages(historyData.messages);
+      if (historyData.messages.length > 0) setShowQuestions(false);
     }
-  }, [isOpen, conversationId]);
+  }, [historyData, isOpen, setChatMessages]);
 
   // Auto-scroll
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, streamingText]);
+  }, [chatMessages, streamingText]);
 
   const sendMessage = async (text?: string) => {
     const messageText = text || input.trim();
@@ -63,7 +71,7 @@ export function ChatPanel({ conversationId, isOpen, onClose }: ChatPanelProps) {
       created_at: new Date().toISOString(),
     };
 
-    setMessages((prev) => [...prev, userMsg]);
+    addChatMessage(userMsg);
     setInput("");
     setShowQuestions(false);
     setIsLoading(true);
@@ -85,7 +93,7 @@ export function ChatPanel({ conversationId, isOpen, onClose }: ChatPanelProps) {
           content: fullResponse,
           created_at: new Date().toISOString(),
         };
-        setMessages((prev) => [...prev, assistantMsg]);
+        addChatMessage(assistantMsg);
         setStreamingText("");
         setIsLoading(false);
         abortRef.current = null;
@@ -107,8 +115,8 @@ export function ChatPanel({ conversationId, isOpen, onClose }: ChatPanelProps) {
 
   const handleClear = async () => {
     try {
-      await clearChatHistory(conversationId);
-      setMessages([]);
+      await clearHistoryMutation.mutateAsync(conversationId);
+      clearChatMessages();
       setShowQuestions(true);
     } catch (error) {
       console.error("Erro ao limpar histórico:", error);
@@ -127,7 +135,7 @@ export function ChatPanel({ conversationId, isOpen, onClose }: ChatPanelProps) {
           content: streamingText + "...",
           created_at: new Date().toISOString(),
         };
-        setMessages((prev) => [...prev, msg]);
+        addChatMessage(msg);
         setStreamingText("");
       }
     }
@@ -153,7 +161,7 @@ export function ChatPanel({ conversationId, isOpen, onClose }: ChatPanelProps) {
               <p className="text-[10px] text-gray-500">Powered by Claude Opus 4.6</p>
             </div>
             <div className="flex items-center gap-2">
-              {messages.length > 0 && (
+              {chatMessages.length > 0 && (
                 <button
                   onClick={handleClear}
                   className="p-1.5 rounded-lg hover:bg-red-500/20 text-gray-500 hover:text-red-400 transition-colors"
@@ -173,7 +181,7 @@ export function ChatPanel({ conversationId, isOpen, onClose }: ChatPanelProps) {
 
           {/* Messages */}
           <div className="flex-1 overflow-y-auto p-4 space-y-4">
-            {messages.length === 0 && !isLoading && showQuestions && (
+            {chatMessages.length === 0 && !isLoading && showQuestions && (
               <motion.div
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
@@ -207,7 +215,7 @@ export function ChatPanel({ conversationId, isOpen, onClose }: ChatPanelProps) {
               </motion.div>
             )}
 
-            {messages.map((msg) => (
+            {chatMessages.map((msg) => (
               <motion.div
                 key={msg.id}
                 initial={{ opacity: 0, y: 8 }}

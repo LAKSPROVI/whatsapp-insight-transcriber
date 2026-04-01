@@ -1,142 +1,203 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useEffect, useCallback, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
-  Zap, History, ChevronRight, Brain, Clock,
-  MessageSquare, Cpu, Activity, CheckCircle2, Trash2
+  History, ChevronRight, Brain, Clock,
+  MessageSquare, Cpu, Activity, CheckCircle2, Trash2, LogOut
 } from "lucide-react";
 import { UploadZone } from "@/components/UploadZone";
 import { ProcessingPanel } from "@/components/ProcessingPanel";
 import { ConversationView } from "@/components/ConversationView";
+import { LoginForm } from "@/components/LoginForm";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { ThemeToggle } from "@/components/ThemeToggle";
+import { useTheme } from "@/lib/theme";
+import { useAppStore } from "@/lib/store";
 import {
-  uploadConversation, getProgress, listConversations, deleteConversation
-} from "@/lib/api";
-import type {
-  ProcessingProgress, ConversationListItem, UIState
-} from "@/types";
-import { cn, formatRelative, formatDate } from "@/lib/utils";
+  useConversations,
+  useDeleteConversation,
+  useUploadConversation,
+} from "@/lib/queries";
+import { getProgress, listConversations } from "@/lib/api";
+import { cn, formatRelative } from "@/lib/utils";
 import toast from "react-hot-toast";
 
-const POLL_INTERVAL = 2000; // 2 segundos
+const POLL_INTERVAL = 2000;
 
 export default function Home() {
-  const [uiState, setUiState] = useState<UIState>({ currentView: "home" });
-  const [isUploading, setIsUploading] = useState(false);
-  const [progress, setProgress] = useState<ProcessingProgress | null>(null);
-  const [recentConversations, setRecentConversations] = useState<ConversationListItem[]>([]);
-  const [pollingInterval, setPollingInterval] = useState<NodeJS.Timeout | null>(null);
+  const {
+    isAuthenticated,
+    checkAuthentication,
+    logout,
+    setAuthenticated,
+    uiState,
+    setUIState,
+    navigateHome,
+    navigateToProcessing,
+    navigateToConversation,
+    isUploading,
+    setIsUploading,
+    progress,
+    setProgress,
+    recentConversations,
+    setRecentConversations,
+    removeConversation,
+  } = useAppStore();
 
-  // Carregar conversas recentes
+  const pollingRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Query para lista de conversas
+  const { data: conversationsData, refetch: refetchConversations } =
+    useConversations(0, 10, !!isAuthenticated);
+
+  // Mutations
+  const uploadMutation = useUploadConversation();
+  const deleteMutation = useDeleteConversation();
+
+  // Sincronizar dados do React Query com o store
   useEffect(() => {
-    listConversations(0, 10).then(setRecentConversations).catch(console.error);
-  }, []);
-
-  const handleUpload = useCallback(async (file: File) => {
-    console.log("[Upload] Iniciando upload do arquivo:", file.name, file.size);
-    setIsUploading(true);
-
-    try {
-      const response = await uploadConversation(file);
-      console.log("[Upload] Resposta do servidor:", response);
-
-      // Mudar a view IMEDIATAMENTE para "processing"
-      setUiState({ currentView: "processing", sessionId: response.session_id });
-      setProgress({
-        session_id: response.session_id,
-        status: "uploading",
-        progress: 0.02,
-        progress_message: "Upload concluído, iniciando processamento...",
-        total_messages: 0,
-        processed_messages: 0,
-        active_agents: 0,
-      });
-      toast.success("Upload realizado! Iniciando processamento com 20 agentes de IA...");
-
-      // Iniciar polling do progresso
-      let pollErrors = 0;
-      const interval = setInterval(async () => {
-        try {
-          const prog = await getProgress(response.session_id);
-          console.log("[Polling] Progresso:", prog.status, prog.progress);
-          setProgress(prog);
-          pollErrors = 0; // Reset error counter on success
-
-          if (prog.status === "completed") {
-            clearInterval(interval);
-            setIsUploading(false);
-            toast.success("Processamento concluído!");
-            // Buscar conversa processada
-            const convs = await listConversations(0, 1);
-            if (convs.length > 0) {
-              setTimeout(() => {
-                setUiState({
-                  currentView: "conversation",
-                  selectedConversationId: convs[0].id,
-                });
-              }, 1500);
-            }
-            // Atualizar lista
-            listConversations(0, 10).then(setRecentConversations);
-          } else if (prog.status === "failed") {
-            clearInterval(interval);
-            setIsUploading(false);
-            toast.error(`Erro no processamento: ${prog.progress_message || "Erro desconhecido"}`);
-          }
-        } catch (err) {
-          pollErrors++;
-          console.error(`[Polling] Erro #${pollErrors}:`, err);
-          // Após 10 erros consecutivos, parar o polling
-          if (pollErrors >= 10) {
-            clearInterval(interval);
-            setIsUploading(false);
-            toast.error("Conexão perdida com o servidor. Verifique e tente novamente.");
-            setUiState({ currentView: "home" });
-          }
-        }
-      }, POLL_INTERVAL);
-
-      setPollingInterval(interval);
-    } catch (err: any) {
-      console.error("[Upload] Erro:", err);
-      toast.error(`Erro no upload: ${err.message}`);
-      setIsUploading(false);
-      setUiState({ currentView: "home" });
+    if (conversationsData) {
+      setRecentConversations(conversationsData);
     }
-  }, []);
+  }, [conversationsData, setRecentConversations]);
+
+  // Verificar autenticação ao carregar
+  useEffect(() => {
+    checkAuthentication();
+  }, [checkAuthentication]);
+
+  const handleLoginSuccess = useCallback(() => {
+    setAuthenticated(true);
+    toast.success("Login realizado com sucesso!");
+  }, [setAuthenticated]);
+
+  const handleLogout = useCallback(() => {
+    logout();
+    toast.success("Logout realizado.");
+  }, [logout]);
+
+  const handleUpload = useCallback(
+    async (file: File) => {
+      console.log("[Upload] Iniciando upload do arquivo:", file.name, file.size);
+      setIsUploading(true);
+
+      try {
+        const response = await uploadMutation.mutateAsync(file);
+        console.log("[Upload] Resposta do servidor:", response);
+
+        navigateToProcessing(response.session_id);
+        setProgress({
+          session_id: response.session_id,
+          status: "uploading",
+          progress: 0.02,
+          progress_message: "Upload concluído, iniciando processamento...",
+          total_messages: 0,
+          processed_messages: 0,
+          active_agents: 0,
+        });
+        toast.success("Upload realizado! Iniciando processamento com 20 agentes de IA...");
+
+        // Iniciar polling do progresso
+        let pollErrors = 0;
+        const interval = setInterval(async () => {
+          try {
+            const prog = await getProgress(response.session_id);
+            console.log("[Polling] Progresso:", prog.status, prog.progress);
+            setProgress(prog);
+            pollErrors = 0;
+
+            if (prog.status === "completed") {
+              clearInterval(interval);
+              setIsUploading(false);
+              toast.success("Processamento concluído!");
+              const convs = await listConversations(0, 1);
+              if (convs.length > 0) {
+                setTimeout(() => {
+                  navigateToConversation(convs[0].id);
+                }, 1500);
+              }
+              refetchConversations();
+            } else if (prog.status === "failed") {
+              clearInterval(interval);
+              setIsUploading(false);
+              toast.error(`Erro no processamento: ${prog.progress_message || "Erro desconhecido"}`);
+            }
+          } catch (err) {
+            pollErrors++;
+            console.error(`[Polling] Erro #${pollErrors}:`, err);
+            if (pollErrors >= 10) {
+              clearInterval(interval);
+              setIsUploading(false);
+              toast.error("Conexão perdida com o servidor. Verifique e tente novamente.");
+              navigateHome();
+            }
+          }
+        }, POLL_INTERVAL);
+
+        pollingRef.current = interval;
+      } catch (err: unknown) {
+        console.error("[Upload] Erro:", err);
+        const message = err instanceof Error ? err.message : String(err);
+        toast.error(`Erro no upload: ${message}`);
+        setIsUploading(false);
+        navigateHome();
+      }
+    },
+    [uploadMutation, navigateToProcessing, navigateToConversation, navigateHome, setIsUploading, setProgress, refetchConversations]
+  );
 
   // Cleanup polling
   useEffect(() => {
     return () => {
-      if (pollingInterval) clearInterval(pollingInterval);
+      if (pollingRef.current) clearInterval(pollingRef.current);
     };
-  }, [pollingInterval]);
+  }, []);
 
   const handleDeleteConversation = async (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
     if (!confirm("Remover esta conversa permanentemente?")) return;
     try {
-      await deleteConversation(id);
-      setRecentConversations((prev) => prev.filter((c) => c.id !== id));
+      await deleteMutation.mutateAsync(id);
+      removeConversation(id);
       toast.success("Conversa removida");
     } catch {
       toast.error("Erro ao remover conversa");
     }
   };
 
-  // ─── Views ────────────────────────────────────────────────────────────────
+  // ─── Loading State ─────────────────────────────────────────────────────────
+  if (isAuthenticated === null) {
+    return (
+      <main className="min-h-screen flex items-center justify-center">
+        <div className="w-8 h-8 border-2 border-brand-500/30 border-t-brand-500 rounded-full animate-spin" />
+      </main>
+    );
+  }
 
+  // ─── Login ─────────────────────────────────────────────────────────────────
+  if (!isAuthenticated) {
+    return (
+      <main className="min-h-screen">
+        <ErrorBoundary>
+          <LoginForm onLoginSuccess={handleLoginSuccess} />
+        </ErrorBoundary>
+      </main>
+    );
+  }
+
+  // ─── Conversation View ─────────────────────────────────────────────────────
   if (uiState.currentView === "conversation" && uiState.selectedConversationId) {
     return (
-      <ConversationView
-        conversationId={uiState.selectedConversationId}
-        onBack={() => {
-          setUiState({ currentView: "home" });
-          setIsUploading(false);
-          setProgress(null);
-          listConversations(0, 10).then(setRecentConversations);
-        }}
-      />
+      <ErrorBoundary>
+        <ConversationView
+          conversationId={uiState.selectedConversationId}
+          onBack={() => {
+            navigateHome();
+            refetchConversations();
+          }}
+        />
+      </ErrorBoundary>
     );
   }
 
@@ -160,7 +221,7 @@ export default function Home() {
             </div>
           </motion.div>
 
-          {/* Status */}
+          {/* Status + Logout */}
           <div className="flex items-center gap-3">
             <div className="flex items-center gap-1.5 text-xs text-accent-400">
               <span className="w-1.5 h-1.5 rounded-full bg-accent-400 animate-pulse" />
@@ -169,6 +230,14 @@ export default function Home() {
             <div className="text-xs text-gray-500">
               Claude Opus 4.6
             </div>
+            <button
+              onClick={handleLogout}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs text-gray-400 hover:text-red-400 hover:bg-red-500/10 transition-all"
+              title="Sair"
+            >
+              <LogOut className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Sair</span>
+            </button>
           </div>
         </div>
       </nav>
@@ -182,10 +251,12 @@ export default function Home() {
             exit={{ opacity: 0 }}
             className="max-w-3xl mx-auto px-6 py-12"
           >
-            <ProcessingPanel
-              progress={progress}
-              sessionId={uiState.sessionId || ""}
-            />
+            <ErrorBoundary>
+              <ProcessingPanel
+                progress={progress}
+                sessionId={uiState.sessionId || ""}
+              />
+            </ErrorBoundary>
           </motion.div>
         ) : (
           <motion.div
@@ -265,7 +336,9 @@ export default function Home() {
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: 0.3 }}
             >
-              <UploadZone onUpload={handleUpload} isUploading={isUploading} />
+              <ErrorBoundary>
+                <UploadZone onUpload={handleUpload} isUploading={isUploading} />
+              </ErrorBoundary>
             </motion.div>
 
             {/* Stats */}
@@ -310,12 +383,7 @@ export default function Home() {
                     <motion.button
                       key={conv.id}
                       whileHover={{ scale: 1.01, x: 4 }}
-                      onClick={() =>
-                        setUiState({
-                          currentView: "conversation",
-                          selectedConversationId: conv.id,
-                        })
-                      }
+                      onClick={() => navigateToConversation(conv.id)}
                       className="glass rounded-2xl p-4 text-left w-full hover:border-brand-500/30 transition-all group"
                     >
                       <div className="flex items-start justify-between gap-3">

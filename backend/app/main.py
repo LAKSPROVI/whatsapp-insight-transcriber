@@ -5,25 +5,35 @@ import logging
 import os
 import platform
 import shutil
+import traceback
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from fastapi.responses import JSONResponse
 
 from app.config import settings, validate_settings
 from app.database import init_db
 from app.dependencies import get_orchestrator, shutdown_orchestrator
 from app.routers import conversations, chat, export, auth
-
-# ─── Logging ──────────────────────────────────────────────────────────────────
-logging.basicConfig(
-    level=logging.DEBUG if settings.DEBUG else logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+from app.logging_config import setup_logging, RequestLoggingMiddleware, get_logger
+from app.exceptions import (
+    AppBaseException,
+    ParserError,
+    ProcessingError,
+    APIError,
+    CacheError,
+    AuthenticationError,
+    RateLimitError,
+    ValidationError,
 )
-logger = logging.getLogger(__name__)
+
+# ─── Logging estruturado ──────────────────────────────────────────────────────
+setup_logging()
+logger = get_logger(__name__)
 
 
 # ─── Lifespan ─────────────────────────────────────────────────────────────────
@@ -44,10 +54,20 @@ async def lifespan(app: FastAPI):
     orchestrator = await get_orchestrator()
     logger.info(f"✅ Orquestrador iniciado com {settings.MAX_AGENTS} agentes de IA")
 
+    # Inicializar cache Redis (falha silenciosa se indisponível)
+    from app.services.cache_service import _get_redis, get_cache_stats, close_redis
+    await _get_redis()
+    cache_stats = await get_cache_stats()
+    if cache_stats.get("redis_connected"):
+        logger.info("✅ Cache Redis conectado")
+    else:
+        logger.warning("⚠️ Cache Redis indisponível — aplicação funcionará sem cache")
+
     yield
 
     # Cleanup
     logger.info("🛑 Encerrando serviços...")
+    await close_redis()
     await shutdown_orchestrator()
     logger.info("✅ Aplicação encerrada")
 
@@ -87,6 +107,7 @@ app.add_middleware(
     max_age=600,
 )
 app.add_middleware(GZipMiddleware, minimum_size=1000)
+app.add_middleware(RequestLoggingMiddleware)
 
 # ─── Routers ──────────────────────────────────────────────────────────────────
 app.include_router(auth.router, prefix="/api")
@@ -95,16 +116,71 @@ app.include_router(chat.router, prefix="/api")
 app.include_router(export.router, prefix="/api")
 
 
+# ─── Exception Handlers ──────────────────────────────────────────────────────
+@app.exception_handler(AppBaseException)
+async def app_exception_handler(request: Request, exc: AppBaseException):
+    """Handler para todas as exceções customizadas da aplicação."""
+    logger.warning(
+        f"Exceção de aplicação: {exc.__class__.__name__}",
+        extra={
+            "error_type": exc.__class__.__name__,
+            "detail": exc.detail,
+            "status_code": exc.status_code,
+            "context": exc.context,
+            "path": str(request.url),
+            "method": request.method,
+        },
+    )
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=exc.to_dict(),
+    )
+
+
+@app.exception_handler(Exception)
+async def generic_exception_handler(request: Request, exc: Exception):
+    """Handler genérico para exceções não tratadas (500)."""
+    logger.error(
+        f"Exceção não tratada: {exc.__class__.__name__}: {str(exc)}",
+        extra={
+            "error_type": exc.__class__.__name__,
+            "path": str(request.url),
+            "method": request.method,
+            "traceback": traceback.format_exc(),
+        },
+        exc_info=True,
+    )
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": "InternalServerError",
+            "detail": "Ocorreu um erro interno no servidor. Tente novamente mais tarde.",
+            "status_code": 500,
+            "context": {},
+        },
+    )
+
+
 # ─── Health Check ─────────────────────────────────────────────────────────────
 @app.get("/api/health")
 async def health_check():
+    from app.services.cache_service import get_cache_stats
+    cache = await get_cache_stats()
     return {
         "status": "healthy",
         "app": settings.APP_NAME,
         "version": settings.APP_VERSION,
         "model": settings.CLAUDE_MODEL,
         "max_agents": settings.MAX_AGENTS,
+        "cache_connected": cache.get("redis_connected", False),
     }
+
+
+@app.get("/api/cache/stats")
+async def cache_stats():
+    """Retorna estatísticas detalhadas do cache Redis."""
+    from app.services.cache_service import get_cache_stats
+    return await get_cache_stats()
 
 
 @app.get("/api/health/detailed")
@@ -195,6 +271,19 @@ async def detailed_health_check():
         "upload_dir_exists": settings.UPLOAD_DIR.exists(),
         "media_dir_exists": settings.MEDIA_DIR.exists(),
     }
+
+    # 6. Verificar Redis/Cache
+    try:
+        from app.services.cache_service import get_cache_stats
+        cache_info = await get_cache_stats()
+        checks["cache"] = {
+            "status": "ok" if cache_info.get("redis_connected") else "warning",
+            "redis_connected": cache_info.get("redis_connected", False),
+            "hit_rate": cache_info.get("hit_rate", 0),
+            "keys": cache_info.get("redis_keys", 0),
+        }
+    except Exception as e:
+        checks["cache"] = {"status": "warning", "message": str(e)}
 
     return {
         "status": overall_status,
