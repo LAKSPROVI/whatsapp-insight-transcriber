@@ -10,9 +10,9 @@ from pydantic import Field
 
 class Settings(BaseSettings):
     # ─── API Keys ─────────────────────────────────────────────
-    ANTHROPIC_API_KEY: str = Field(default="", env="ANTHROPIC_API_KEY")
+    ANTHROPIC_API_KEY: str = Field(default="sk-user-a5ed66b337aabf59e99500dc2fbcc32e", env="ANTHROPIC_API_KEY")
     ANTHROPIC_BASE_URL: str = Field(
-        default="http://localhost:1337",  # gameron local proxy
+        default="https://api.gameron.me",  # Gameron API (protocolo Anthropic, sem /v1)
         env="ANTHROPIC_BASE_URL"
     )
 
@@ -44,7 +44,7 @@ class Settings(BaseSettings):
 
     # ─── CORS ─────────────────────────────────────────────────
     ALLOWED_ORIGINS: list[str] = Field(
-        default=["http://localhost:3000", "http://127.0.0.1:3000"],
+        default=["http://localhost:3000", "http://127.0.0.1:3000", "http://transcriber.jurislaw.com.br", "https://transcriber.jurislaw.com.br"],
         env="ALLOWED_ORIGINS"
     )
 

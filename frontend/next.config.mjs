@@ -11,15 +11,15 @@ const nextConfig = {
     return [
       {
         source: "/api/:path*",
-        destination: `${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8020"}/api/:path*`,
+        destination: `${process.env.NEXT_PUBLIC_API_URL || "http://77.42.68.212:8020"}/api/:path*`,
       },
     ];
   },
   images: {
-    domains: ["localhost"],
+    domains: ["localhost", "77.42.68.212", "transcriber.jurislaw.com.br"],
   },
   env: {
-    NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL || "http://localhost:8020",
+    NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL || "http://77.42.68.212:8020",
   },
 };
 
