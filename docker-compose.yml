@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   # ─── Backend FastAPI ──────────────────────────────────────────
   backend:
@@ -19,7 +17,7 @@ services:
       - UPLOAD_DIR=/app/data/uploads
       - MEDIA_DIR=/app/data/media
       - DEBUG=${DEBUG:-false}
-      - ALLOWED_ORIGINS=["http://localhost:3000","http://frontend:3000"]
+      - ALLOWED_ORIGINS=["http://localhost:3000","http://localhost:3020","http://frontend:3000","http://77.42.68.212:3020","https://transcriber.jurislaw.com.br"]
     volumes:
       - wit_data:/app/data
     extra_hosts:
@@ -34,15 +32,23 @@ services:
   frontend:
     build:
       context: ./frontend
-      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ""
     container_name: wit_frontend
     restart: unless-stopped
     ports:
       - "3020:3000"
     environment:
-      - NEXT_PUBLIC_API_URL=http://localhost:8020
+      - NEXT_PUBLIC_API_URL=
+      - BACKEND_URL=http://backend:8000
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
 volumes:
   wit_data:

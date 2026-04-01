@@ -9,13 +9,14 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc
 
-from app.database import get_db
+from app.database import get_db, AsyncSessionLocal
 from app.models import Conversation, Message, ChatMessage, ProcessingStatus
 from app.schemas import (
     ChatRequest, ChatResponse, ChatHistoryResponse,
     ConversationAnalytics, ParticipantStats
 )
 from app.dependencies import get_claude_service
+from app.auth import get_current_user, UserInfo
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -27,6 +28,7 @@ async def send_chat_message(
     request: ChatRequest,
     db: AsyncSession = Depends(get_db),
     claude=Depends(get_claude_service),
+    current_user: UserInfo = Depends(get_current_user),
 ):
     """
     Chat RAG: envia uma pergunta sobre a conversa transcrita.
@@ -80,15 +82,16 @@ async def send_chat_message(
             response_text.append(chunk)
             yield f"data: {chunk}\n\n"
 
-        # Salvar resposta completa
+        # Salvar resposta completa usando sessão DB independente
         full_response = "".join(response_text)
-        assistant_msg = ChatMessage(
-            conversation_id=conversation_id,
-            role="assistant",
-            content=full_response,
-        )
-        db.add(assistant_msg)
-        await db.commit()
+        async with AsyncSessionLocal() as session:
+            assistant_msg = ChatMessage(
+                conversation_id=conversation_id,
+                role="assistant",
+                content=full_response,
+            )
+            session.add(assistant_msg)
+            await session.commit()
 
         yield "data: [DONE]\n\n"
 
@@ -106,6 +109,7 @@ async def send_chat_message(
 async def get_chat_history(
     conversation_id: str,
     db: AsyncSession = Depends(get_db),
+    current_user: UserInfo = Depends(get_current_user),
 ):
     """Retorna o histórico completo do chat RAG"""
     stmt = (
@@ -126,6 +130,7 @@ async def get_chat_history(
 async def clear_chat_history(
     conversation_id: str,
     db: AsyncSession = Depends(get_db),
+    current_user: UserInfo = Depends(get_current_user),
 ):
     """Limpa o histórico do chat"""
     stmt = select(ChatMessage).where(ChatMessage.conversation_id == conversation_id)
@@ -143,6 +148,7 @@ async def clear_chat_history(
 async def get_analytics(
     conversation_id: str,
     db: AsyncSession = Depends(get_db),
+    current_user: UserInfo = Depends(get_current_user),
 ):
     """Retorna análises detalhadas da conversa"""
     stmt = select(Conversation).where(Conversation.id == conversation_id)

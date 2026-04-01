@@ -9,15 +9,31 @@ import type {
   ExportOptions,
 } from "@/types";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8020";
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || "";
 
-async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, init);
-  if (!res.ok) {
-    const body = await res.text().catch(() => "");
-    throw new Error(`API ${res.status}: ${body}`);
+async function apiFetch<T>(path: string, init?: RequestInit, timeoutMs = 60000): Promise<T> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const res = await fetch(`${API_BASE}${path}`, {
+      ...init,
+      signal: init?.signal || controller.signal,
+    });
+    clearTimeout(timeout);
+
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      throw new Error(`API ${res.status}: ${body}`);
+    }
+    return res.json();
+  } catch (err: any) {
+    clearTimeout(timeout);
+    if (err.name === "AbortError") {
+      throw new Error("Tempo limite excedido. Verifique sua conexão e tente novamente.");
+    }
+    throw err;
   }
-  return res.json();
 }
 
 // ─── Conversations ──────────────────────────────────────────────────────────
@@ -25,10 +41,11 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
 export async function uploadConversation(file: File): Promise<UploadResponse> {
   const form = new FormData();
   form.append("file", file);
+  // Timeout maior para upload de arquivos grandes (5 minutos)
   return apiFetch<UploadResponse>("/api/conversations/upload", {
     method: "POST",
     body: form,
-  });
+  }, 300000);
 }
 
 export async function getProgress(sessionId: string): Promise<ProcessingProgress> {
@@ -157,7 +174,22 @@ export async function exportConversation(
   );
   if (!res.ok) throw new Error(`Export failed: ${res.status}`);
 
-  const blob = await res.blob();
+  const contentType = res.headers.get("content-type") || "";
+  let blob: Blob;
+
+  if (contentType.includes("application/json")) {
+    const data = await res.json();
+    if (data.download_url) {
+      const fileRes = await fetch(data.download_url);
+      if (!fileRes.ok) throw new Error("Failed to download file");
+      blob = await fileRes.blob();
+    } else {
+      throw new Error("Invalid export response");
+    }
+  } else {
+    blob = await res.blob();
+  }
+
   const ext = options.format === "pdf" ? "pdf" : "docx";
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");

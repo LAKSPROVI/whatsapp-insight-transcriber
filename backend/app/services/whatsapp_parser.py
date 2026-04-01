@@ -87,7 +87,7 @@ class WhatsAppParser:
         "video": {".mp4", ".mov", ".avi", ".mkv", ".3gp", ".wmv", ".flv", ".webm"},
         "audio": {".mp3", ".ogg", ".opus", ".aac", ".wav", ".m4a", ".flac", ".amr"},
         "document": {".pdf", ".doc", ".docx", ".xls", ".xlsx", ".txt", ".ppt", ".pptx"},
-        "sticker": {".webp"},
+        "sticker": set(),
     }
 
     def __init__(self):
@@ -107,6 +107,11 @@ class WhatsAppParser:
         media_files = []
 
         with zipfile.ZipFile(zip_path, 'r') as zf:
+            # Fix #10: validar contra path traversal
+            for member in zf.namelist():
+                member_path = os.path.normpath(member)
+                if member_path.startswith('..') or os.path.isabs(member_path):
+                    raise ValueError(f"Caminho suspeito no ZIP (path traversal): {member}")
             zf.extractall(extract_path)
 
         # Localizar arquivo de chat e mídias
@@ -135,6 +140,10 @@ class WhatsAppParser:
 
     def parse_file(self, chat_file: str) -> List[ParsedMessage]:
         """Parse completo do arquivo de chat"""
+        # Fix #9: reset de estado mutável
+        self.participants = set()
+        self.messages = []
+
         with open(chat_file, "r", encoding="utf-8", errors="replace") as f:
             content = f.read()
 
@@ -159,13 +168,9 @@ class WhatsAppParser:
 
     def _split_into_messages(self, content: str) -> List[str]:
         """Divide o conteúdo em blocos de mensagens individuais"""
-        # Primeiro tentar split por qualquer padrão de data no início da linha
-        date_start = re.compile(
-            r"(?=^\d{1,2}/\d{1,2}/\d{2,4}[,\s]|\^\[\d{1,2}/\d{1,2}/\d{2,4})",
-            re.MULTILINE
-        )
+        # Fix #7: removido regex date_start não utilizado
 
-        # Método mais robusto: split nas linhas que começam com data
+        # Método robusto: split nas linhas que começam com data
         line_pattern = re.compile(
             r"^(?:\[)?(\d{1,2}/\d{1,2}/\d{2,4})",
             re.MULTILINE
@@ -177,7 +182,7 @@ class WhatsAppParser:
         for line in content.splitlines():
             if line_pattern.match(line.strip()) or (line.strip().startswith("[") and re.match(r"\[\d", line.strip())):
                 if current:
-                    parts.append(" ".join(current))
+                    parts.append("\n".join(current))  # Fix #8: preservar newlines
                 current = [line]
             else:
                 if current:
@@ -186,7 +191,7 @@ class WhatsAppParser:
                     parts.append(line)
 
         if current:
-            parts.append(" ".join(current))
+            parts.append("\n".join(current))  # Fix #8: preservar newlines
 
         return parts if parts else content.splitlines()
 
@@ -234,8 +239,18 @@ class WhatsAppParser:
 
     def _parse_datetime(self, date_str: str, time_str: str) -> Optional[datetime]:
         """Parse de data e hora em múltiplos formatos"""
-        # Normalizar
-        time_str = time_str.replace("AM", "").replace("PM", "").strip()
+        # Fix #5: Converter AM/PM para 24h antes de remover
+        if "PM" in time_str.upper() or "AM" in time_str.upper():
+            is_pm = "PM" in time_str.upper()
+            time_str = time_str.upper().replace("AM", "").replace("PM", "").strip()
+            parts = time_str.split(":")
+            hour = int(parts[0])
+            if is_pm and hour != 12:
+                hour += 12
+            elif not is_pm and hour == 12:
+                hour = 0
+            parts[0] = str(hour)
+            time_str = ":".join(parts)
 
         # Tratar segundos opcionais
         if time_str.count(":") == 1:

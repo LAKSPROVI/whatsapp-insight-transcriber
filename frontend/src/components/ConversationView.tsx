@@ -13,7 +13,7 @@ import { MessageBubble } from "@/components/MessageBubble";
 import { ChatPanel } from "@/components/ChatPanel";
 import { AnalyticsPanel } from "@/components/AnalyticsPanel";
 import { ExportPanel } from "@/components/ExportPanel";
-import { cn, formatDate, formatDateShort, getSentimentEmoji, getSentimentColor } from "@/lib/utils";
+import { cn, formatDate, formatDateShort, getSentimentEmoji, getSentimentColor, getSentimentColorHex } from "@/lib/utils";
 
 interface ConversationViewProps {
   conversationId: string;
@@ -59,20 +59,23 @@ export function ConversationView({ conversationId, onBack }: ConversationViewPro
     [conversationId, filterSender]
   );
 
+  // Effect 1: Carregar dados da conversa (só quando conversationId muda)
   useEffect(() => {
-    const load = async () => {
+    if (conversationId) {
       setLoading(true);
-      try {
-        const conv = await getConversation(conversationId);
-        setConversation(conv);
-        await loadMessages(0, false);
-      } catch (err) {
-        console.error("Erro ao carregar conversa:", err);
-      } finally {
-        setLoading(false);
-      }
-    };
-    load();
+      getConversation(conversationId)
+        .then((conv) => {
+          if (conv) setConversation(conv);
+        })
+        .catch((err) => console.error("Erro ao carregar conversa:", err));
+    }
+  }, [conversationId]);
+
+  // Effect 2: Carregar mensagens (quando conversationId ou filtro/loadMessages muda)
+  useEffect(() => {
+    if (conversationId) {
+      loadMessages(0, false).finally(() => setLoading(false));
+    }
   }, [conversationId, loadMessages]);
 
   const loadMore = async () => {
@@ -153,7 +156,7 @@ export function ConversationView({ conversationId, onBack }: ConversationViewPro
               {conversation.sentiment_overall && (
                 <span
                   className="flex items-center gap-1"
-                  style={{ color: getSentimentColor(conversation.sentiment_overall) }}
+                  style={{ color: getSentimentColorHex(conversation.sentiment_overall) }}
                 >
                   {getSentimentEmoji(conversation.sentiment_overall)}
                 </span>

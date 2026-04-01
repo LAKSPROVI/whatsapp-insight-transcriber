@@ -2,6 +2,7 @@
 Extrator de metadados de arquivos de mídia
 """
 import os
+import asyncio
 import mimetypes
 import logging
 from pathlib import Path
@@ -40,6 +41,11 @@ def format_duration(seconds: float) -> str:
 class MediaMetadataExtractor:
     """Extrai metadados de arquivos de mídia usando múltiplas bibliotecas"""
 
+    async def extract_async(self, file_path: str) -> dict:
+        """Async wrapper para extract() - não bloqueia o event loop."""
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, self.extract, file_path)
+
     @staticmethod
     def extract(file_path: str) -> Dict[str, Any]:
         """Extrai todos os metadados disponíveis de um arquivo"""
@@ -48,9 +54,10 @@ class MediaMetadataExtractor:
         if not path.exists():
             return {}
 
+        stat_result = path.stat()
         metadata = {
-            "file_size": path.stat().st_size,
-            "file_size_formatted": format_file_size(path.stat().st_size),
+            "file_size": stat_result.st_size,
+            "file_size_formatted": format_file_size(stat_result.st_size),
             "format": path.suffix.lower().lstrip("."),
             "mime_type": mimetypes.guess_type(file_path)[0],
         }

@@ -7,6 +7,10 @@ import logging
 import os
 import json
 import asyncio
+import shutil
+import subprocess
+import tempfile
+import functools
 from pathlib import Path
 from typing import Optional, List, Dict, Any, AsyncIterator
 
@@ -29,6 +33,34 @@ class ClaudeService:
         )
         self.model = settings.CLAUDE_MODEL
         self.max_tokens = settings.MAX_TOKENS
+        # Fix 5: Cache do modelo Whisper (lazy load)
+        self._whisper_model = None
+        # Fix 6: Semáforo para limitar chamadas simultâneas à API
+        self._api_semaphore = asyncio.Semaphore(10)
+
+    async def _call_claude_with_retry(self, **kwargs) -> Any:
+        """
+        Wrapper com retry e semáforo para chamadas à API Claude.
+        3 tentativas com backoff exponencial (1s, 2s, 4s).
+        """
+        max_retries = 3
+        backoff_times = [1, 2, 4]
+
+        async with self._api_semaphore:
+            for attempt in range(max_retries):
+                try:
+                    return await self.client.messages.create(**kwargs)
+                except Exception as e:
+                    if attempt < max_retries - 1:
+                        wait_time = backoff_times[attempt]
+                        logger.warning(
+                            f"Tentativa {attempt + 1}/{max_retries} falhou: {e}. "
+                            f"Retentando em {wait_time}s..."
+                        )
+                        await asyncio.sleep(wait_time)
+                    else:
+                        logger.error(f"Todas as {max_retries} tentativas falharam: {e}")
+                        raise
 
     async def transcribe_audio(
         self,
@@ -36,31 +68,40 @@ class ClaudeService:
         media_metadata: Optional[Dict] = None
     ) -> Dict[str, Any]:
         """
-        Transcreve um arquivo de áudio usando Claude.
-        Converte áudio para base64 e usa visão multimodal.
+        Transcreve um arquivo de áudio.
+        Fix 1: Usa Whisper como método primário. Se falhar, envia descrição textual ao Claude.
         """
         path = Path(file_path)
         if not path.exists():
             raise FileNotFoundError(f"Arquivo não encontrado: {file_path}")
 
-        # Ler arquivo como base64
-        with open(file_path, "rb") as f:
-            audio_data = base64.standard_b64encode(f.read()).decode("utf-8")
+        # Método primário: Whisper
+        try:
+            transcription_raw = await self._whisper_transcribe(file_path)
+            if transcription_raw:
+                # Refinamento com Claude
+                message = await self._call_claude_with_retry(
+                    model=self.model,
+                    max_tokens=2048,
+                    messages=[{
+                        "role": "user",
+                        "content": f"""Corrija e formate esta transcrição de áudio do WhatsApp:
 
-        # Determinar mime type
+Transcrição bruta: {transcription_raw}
+
+Corrija erros ortográficos, pontuação e formatação. Mantenha o conteúdo original.
+Responda apenas com a transcrição corrigida."""
+                    }]
+                )
+                return {
+                    "transcription": message.content[0].text.strip(),
+                    "tokens_used": message.usage.input_tokens + message.usage.output_tokens,
+                }
+        except Exception as e:
+            logger.warning(f"Whisper falhou, usando fallback textual: {e}")
+
+        # Fallback: Enviar descrição textual ao Claude (sem base64 de áudio)
         ext = path.suffix.lower()
-        mime_map = {
-            ".mp3": "audio/mpeg",
-            ".ogg": "audio/ogg",
-            ".opus": "audio/opus",
-            ".wav": "audio/wav",
-            ".m4a": "audio/mp4",
-            ".aac": "audio/aac",
-            ".flac": "audio/flac",
-            ".amr": "audio/amr",
-        }
-        mime_type = mime_map.get(ext, "audio/mpeg")
-
         metadata_text = ""
         if media_metadata:
             metadata_text = f"""
@@ -71,41 +112,22 @@ Metadados do arquivo:
 - Codec: {media_metadata.get('codec', 'desconhecido')}
 """
 
-        message = await self.client.messages.create(
+        message = await self._call_claude_with_retry(
             model=self.model,
             max_tokens=self.max_tokens,
             messages=[
                 {
                     "role": "user",
-                    "content": [
-                        {
-                            "type": "document" if mime_type.startswith("audio") else "text",
-                            "source": {
-                                "type": "base64",
-                                "media_type": mime_type,
-                                "data": audio_data,
-                            },
-                        } if False else  # Claude não suporta áudio diretamente ainda
-                        {
-                            "type": "text",
-                            "text": f"""Você recebeu um arquivo de áudio codificado em base64 para transcrição.
+                    "content": f"""Você recebeu um arquivo de áudio do WhatsApp que não pôde ser transcrito automaticamente via Whisper.
 {metadata_text}
 
-Como este é um arquivo de áudio de uma conversa do WhatsApp, por favor:
-1. Transcreva o conteúdo de áudio na íntegra, palavra por palavra
-2. Identifique o idioma sendo falado
-3. Formate a transcrição de forma clara e legível
-4. Se houver múltiplos falantes, identifique as trocas de voz
-5. Inclua pausas significativas e entonações relevantes [pausa], [risos], etc.
+Como não foi possível processar o áudio diretamente, por favor gere uma nota indicando que:
+1. O arquivo de áudio foi recebido mas a transcrição automática não está disponível
+2. O formato do arquivo é: {ext.lstrip('.')}
+3. Inclua os metadados disponíveis
 
-Responda APENAS com a transcrição, sem comentários adicionais.
-Se não for possível transcrever (arquivo corrompido, silêncio, etc.), 
-responda com: [Áudio não transcrito: motivo]
-
-Arquivo de áudio em base64: {audio_data[:100]}... (arquivo completo disponível)
+Responda com: [Áudio recebido - transcrição via Whisper indisponível. {metadata_text.strip() if metadata_text.strip() else 'Sem metadados disponíveis.'}]
 """
-                        }
-                    ],
                 }
             ],
         )
@@ -134,7 +156,7 @@ Arquivo de áudio em base64: {audio_data[:100]}... (arquivo completo disponível
 
         if transcription_raw:
             # Refinamento com Claude
-            message = await self.client.messages.create(
+            message = await self._call_claude_with_retry(
                 model=self.model,
                 max_tokens=2048,
                 messages=[{
@@ -162,9 +184,13 @@ Responda apenas com a transcrição corrigida."""
         """Tenta transcrição via OpenAI Whisper local"""
         try:
             import whisper
-            model = whisper.load_model("base")
-            loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(None, model.transcribe, file_path)
+            # Fix 5: Lazy load do modelo Whisper com cache
+            if self._whisper_model is None:
+                logger.info("Carregando modelo Whisper (primeira vez)...")
+                self._whisper_model = whisper.load_model("base")
+            # Fix 4: asyncio.get_running_loop() em vez de get_event_loop()
+            loop = asyncio.get_running_loop()
+            result = await loop.run_in_executor(None, self._whisper_model.transcribe, file_path)
             return result["text"]
         except ImportError:
             logger.debug("Whisper não instalado")
@@ -201,7 +227,7 @@ Responda apenas com a transcrição corrigida."""
         }
         media_type = media_type_map.get(ext, "image/jpeg")
 
-        message = await self.client.messages.create(
+        message = await self._call_claude_with_retry(
             model=self.model,
             max_tokens=2048,
             messages=[{
@@ -267,20 +293,25 @@ Responda APENAS com o JSON, sem texto adicional."""
         frame_results = []
 
         # Extrair frames do vídeo
-        frames = await self._extract_video_frames(file_path, max_frames=5)
+        frames, frames_dir = await self._extract_video_frames(file_path, max_frames=5)
 
-        for frame_path in frames:
-            try:
-                frame_result = await self.describe_image(frame_path)
-                frame_results.append(frame_result.get("description", ""))
-            except Exception as e:
-                logger.warning(f"Erro ao processar frame: {e}")
-            finally:
-                # Limpar frame temporário
+        try:
+            for frame_path in frames:
                 try:
-                    os.remove(frame_path)
-                except Exception:
-                    pass
+                    frame_result = await self.describe_image(frame_path)
+                    frame_results.append(frame_result.get("description", ""))
+                except Exception as e:
+                    logger.warning(f"Erro ao processar frame: {e}")
+                finally:
+                    # Limpar frame temporário
+                    try:
+                        os.remove(frame_path)
+                    except Exception:
+                        pass
+        finally:
+            # Fix 3: Limpar diretório temporário de frames
+            if frames_dir:
+                shutil.rmtree(frames_dir, ignore_errors=True)
 
         # Extrair e transcrever áudio do vídeo
         audio_transcription = ""
@@ -301,7 +332,7 @@ Responda APENAS com o JSON, sem texto adicional."""
         frames_summary = "\n".join([f"Frame {i+1}: {desc}" for i, desc in enumerate(frame_results) if desc])
         duration = media_metadata.get("duration_formatted", "desconhecida") if media_metadata else "desconhecida"
 
-        message = await self.client.messages.create(
+        message = await self._call_claude_with_retry(
             model=self.model,
             max_tokens=2048,
             messages=[{
@@ -344,12 +375,12 @@ Responda APENAS com o JSON."""
             "tokens_used": message.usage.input_tokens + message.usage.output_tokens,
         }
 
-    async def _extract_video_frames(self, video_path: str, max_frames: int = 5) -> List[str]:
-        """Extrai frames representativos de um vídeo usando ffmpeg"""
+    async def _extract_video_frames(self, video_path: str, max_frames: int = 5) -> tuple:
+        """
+        Extrai frames representativos de um vídeo usando ffmpeg.
+        Retorna tupla (lista_de_frames, diretorio_temporario) para cleanup.
+        """
         try:
-            import subprocess
-            import tempfile
-
             frames = []
             output_dir = tempfile.mkdtemp()
 
@@ -361,7 +392,12 @@ Responda APENAS com o JSON."""
                 "-y", "-loglevel", "quiet"
             ]
 
-            result = subprocess.run(cmd, capture_output=True, timeout=60)
+            # Fix 2: Executar subprocess em executor para não bloquear event loop
+            loop = asyncio.get_running_loop()
+            result = await loop.run_in_executor(
+                None,
+                functools.partial(subprocess.run, cmd, capture_output=True, timeout=60)
+            )
 
             if result.returncode == 0:
                 for i in range(1, max_frames + 1):
@@ -369,18 +405,19 @@ Responda APENAS com o JSON."""
                     if os.path.exists(frame_path):
                         frames.append(frame_path)
 
-            return frames
+            return frames, output_dir
         except Exception as e:
             logger.warning(f"Erro ao extrair frames: {e}")
-            return []
+            return [], None
 
     async def _extract_audio_from_video(self, video_path: str) -> Optional[str]:
         """Extrai a faixa de áudio de um vídeo"""
         try:
-            import subprocess
-            import tempfile
+            # Fix 7: Usar NamedTemporaryFile em vez de mktemp inseguro
+            tmp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
+            output_path = tmp_file.name
+            tmp_file.close()
 
-            output_path = tempfile.mktemp(suffix=".mp3")
             cmd = [
                 "ffmpeg", "-i", video_path,
                 "-vn", "-acodec", "mp3",
@@ -389,9 +426,20 @@ Responda APENAS com o JSON."""
                 "-y", "-loglevel", "quiet"
             ]
 
-            result = subprocess.run(cmd, capture_output=True, timeout=120)
+            # Fix 2: Executar subprocess em executor para não bloquear event loop
+            loop = asyncio.get_running_loop()
+            result = await loop.run_in_executor(
+                None,
+                functools.partial(subprocess.run, cmd, capture_output=True, timeout=120)
+            )
             if result.returncode == 0 and os.path.exists(output_path):
                 return output_path
+            else:
+                # Limpar arquivo se ffmpeg falhou
+                try:
+                    os.remove(output_path)
+                except Exception:
+                    pass
         except Exception as e:
             logger.warning(f"Erro ao extrair áudio: {e}")
 
@@ -403,7 +451,7 @@ Responda APENAS com o JSON."""
         context: str = ""
     ) -> Dict[str, Any]:
         """Analisa o sentimento de uma mensagem ou bloco de texto"""
-        message = await self.client.messages.create(
+        message = await self._call_claude_with_retry(
             model=self.model,
             max_tokens=512,
             messages=[{
@@ -443,7 +491,12 @@ Responda APENAS com o JSON."""
         """Gera um resumo executivo da conversa"""
         participants_str = ", ".join(participants) if participants else "participantes"
 
-        message = await self.client.messages.create(
+        # Fix 8: Log de truncamento silencioso
+        limit = 15000
+        if len(conversation_text) > limit:
+            logger.warning(f"Texto truncado de {len(conversation_text)} para {limit} caracteres em generate_summary")
+
+        message = await self._call_claude_with_retry(
             model=self.model,
             max_tokens=2048,
             messages=[{
@@ -451,7 +504,7 @@ Responda APENAS com o JSON."""
                 "content": f"""Analise esta conversa do WhatsApp entre {participants_str} e gere um relatório completo em JSON:
 
 CONVERSA:
-{conversation_text[:15000]}  
+{conversation_text[:limit]}  
 
 Responda com JSON:
 {{
@@ -493,14 +546,20 @@ Responda APENAS com o JSON."""
         conversation_text: str
     ) -> Dict[str, Any]:
         """Detecta contradições e inconsistências na conversa"""
-        message = await self.client.messages.create(
+
+        # Fix 8: Log de truncamento silencioso
+        limit = 12000
+        if len(conversation_text) > limit:
+            logger.warning(f"Texto truncado de {len(conversation_text)} para {limit} caracteres em detect_contradictions")
+
+        message = await self._call_claude_with_retry(
             model=self.model,
             max_tokens=2048,
             messages=[{
                 "role": "user",
                 "content": f"""Analise esta conversa do WhatsApp em busca de contradições, inconsistências ou mudanças de posição:
 
-{conversation_text[:12000]}
+{conversation_text[:limit]}
 
 Identifique e liste em JSON:
 {{
@@ -543,14 +602,20 @@ Responda APENAS com o JSON."""
         conversation_text: str
     ) -> Dict[str, Any]:
         """Extrai palavras-chave, tópicos e dados para nuvem de palavras"""
-        message = await self.client.messages.create(
+
+        # Fix 8: Log de truncamento silencioso
+        limit = 10000
+        if len(conversation_text) > limit:
+            logger.warning(f"Texto truncado de {len(conversation_text)} para {limit} caracteres em extract_keywords")
+
+        message = await self._call_claude_with_retry(
             model=self.model,
             max_tokens=1024,
             messages=[{
                 "role": "user",
                 "content": f"""Extraia palavras-chave e tópicos desta conversa do WhatsApp:
 
-{conversation_text[:10000]}
+{conversation_text[:limit]}
 
 Responda em JSON:
 {{
@@ -590,11 +655,16 @@ Responda APENAS com o JSON."""
         Chat RAG com streaming.
         O usuário pode fazer perguntas sobre a conversa transcrita.
         """
+        # Fix 8: Log de truncamento silencioso
+        limit = 20000
+        if len(conversation_context) > limit:
+            logger.warning(f"Contexto truncado de {len(conversation_context)} para {limit} caracteres em chat_with_context")
+
         system_prompt = f"""Você é um assistente especializado em análise de conversas do WhatsApp.
 Você tem acesso à transcrição completa de uma conversa e deve responder perguntas sobre ela.
 
 TRANSCRIÇÃO DA CONVERSA:
-{conversation_context[:20000]}
+{conversation_context[:limit]}
 
 Responda sempre em Português do Brasil, de forma clara e objetiva.
 Quando referenciar momentos específicos da conversa, cite a data/hora e o participante."""

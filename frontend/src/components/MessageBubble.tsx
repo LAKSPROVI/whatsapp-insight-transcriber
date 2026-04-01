@@ -32,7 +32,7 @@ export function MessageBubble({
   const [expanded, setExpanded] = useState(false);
   const [mediaPreview, setMediaPreview] = useState(false);
 
-  const senderColor = getSenderColor(message.sender, participants);
+  const senderColor = getSenderColor(message.sender, "chart");
   const isMedia = message.media_type !== "text" && message.media_type !== "deleted";
   const hasContent = message.transcription || message.description || message.ocr_text;
   const ts = (() => {
@@ -51,7 +51,7 @@ export function MessageBubble({
   })();
 
   const mediaUrl = message.media_url
-    ? `${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"}${message.media_url}`
+    ? `${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8020"}${message.media_url}`
     : null;
 
   return (
@@ -95,8 +95,7 @@ export function MessageBubble({
           {/* Sentimento */}
           {message.sentiment && (
             <span
-              className="text-[10px] ml-auto opacity-60"
-              style={{ color: getSentimentColor(message.sentiment) }}
+              className={cn("text-[10px] ml-auto opacity-60", getSentimentColor(message.sentiment))}
             >
               {getSentimentEmoji(message.sentiment)}
             </span>

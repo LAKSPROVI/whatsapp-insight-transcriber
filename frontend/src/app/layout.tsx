@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Inter } from "next/font/google";
 import "./globals.css";
 import { Toaster } from "react-hot-toast";
@@ -10,10 +10,13 @@ export const metadata: Metadata = {
   description:
     "Plataforma avançada de transcrição e análise de conversas do WhatsApp com IA",
   keywords: ["whatsapp", "transcrição", "IA", "análise", "Claude"],
-  themeColor: "#0a0a14",
   icons: {
     icon: "/favicon.ico",
   },
+};
+
+export const viewport: Viewport = {
+  themeColor: '#0a0a14',
 };
 
 export default function RootLayout({

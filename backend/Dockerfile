@@ -18,6 +18,11 @@ COPY . .
 # Criar diretórios
 RUN mkdir -p /app/data/uploads /app/data/media
 
+# Criar usuário não-root
+RUN adduser --system --uid 1001 appuser && \
+    chown -R appuser:nogroup /app/data
+USER appuser
+
 # Expor porta
 EXPOSE 8000
 

@@ -14,18 +14,20 @@ from sqlalchemy import select
 
 from app.database import get_db
 from app.models import Conversation, Message, ProcessingStatus
-from app.schemas import ExportRequest, ExportResponse
+from app.schemas import ExportRequest
 from app.services.export_service import PDFExporter, DOCXExporter
+from app.auth import get_current_user, UserInfo
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["export"])
 
 
-@router.post("/conversations/{conversation_id}/export", response_model=ExportResponse)
+@router.post("/conversations/{conversation_id}/export")
 async def export_conversation(
     conversation_id: str,
     request: ExportRequest,
     db: AsyncSession = Depends(get_db),
+    current_user: UserInfo = Depends(get_current_user),
 ):
     """
     Exporta a transcrição completa para PDF ou DOCX.
@@ -95,11 +97,16 @@ async def serve_media(
     conversation_id: str,
     filename: str,
     db: AsyncSession = Depends(get_db),
+    current_user: UserInfo = Depends(get_current_user),
 ):
     """
     Serve arquivos de mídia originais.
     Utilizado pelos botões 'Visualizar' e 'Baixar' na interface.
     """
+    # Validar filename contra path traversal
+    if ".." in filename or "/" in filename or "\\" in filename:
+        raise HTTPException(400, "Nome de arquivo inválido")
+
     # Buscar mensagem com este arquivo
     stmt = (
         select(Message)
@@ -143,6 +150,7 @@ async def get_media_info(
     conversation_id: str,
     filename: str,
     db: AsyncSession = Depends(get_db),
+    current_user: UserInfo = Depends(get_current_user),
 ):
     """Retorna metadados de um arquivo de mídia específico"""
     stmt = (
@@ -170,7 +178,9 @@ async def get_media_info(
 
 
 @router.get("/agents/status")
-async def get_agents_status(orchestrator=Depends(lambda: None)):
+async def get_agents_status(
+    current_user: UserInfo = Depends(get_current_user),
+):
     """Retorna status de todos os agentes de IA"""
     try:
         from app.dependencies import get_orchestrator_instance

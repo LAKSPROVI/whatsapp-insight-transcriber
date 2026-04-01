@@ -4,7 +4,7 @@ API Endpoints - Upload e Gerenciamento de Conversas
 import os
 import uuid
 import logging
-import asyncio
+import zipfile
 from pathlib import Path
 from typing import List, Optional
 
@@ -22,12 +22,80 @@ from app.schemas import (
 )
 from app.services.conversation_processor import ConversationProcessor
 from app.dependencies import get_orchestrator
+from app.auth import get_current_user, UserInfo
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/conversations", tags=["conversations"])
 
 # ─── Estado Global de Progresso ──────────────────────────────────────────────
 _progress_store: dict = {}  # session_id -> progress data
+
+# ─── Constantes de Segurança ZIP ─────────────────────────────────────────────
+ZIP_MAGIC_BYTES = b"PK\x03\x04"
+
+
+def _validate_zip_file(content: bytes) -> None:
+    """
+    Valida segurança do arquivo ZIP:
+    - Magic bytes corretos
+    - Número de arquivos dentro do limite
+    - Tamanho total descompactado (proteção contra zip bombs)
+    - Path traversal nos nomes dos arquivos
+    """
+    # 1. Validar magic bytes
+    if not content[:4] == ZIP_MAGIC_BYTES:
+        raise HTTPException(400, "Arquivo inválido: não é um ZIP válido (magic bytes incorretos)")
+
+    # 2. Verificar estrutura do ZIP
+    import io
+    try:
+        with zipfile.ZipFile(io.BytesIO(content), "r") as zf:
+            # 3. Limitar número de arquivos
+            file_count = len(zf.infolist())
+            if file_count > settings.MAX_ZIP_FILES:
+                raise HTTPException(
+                    400,
+                    f"ZIP contém {file_count} arquivos. Máximo permitido: {settings.MAX_ZIP_FILES}"
+                )
+
+            # 4. Calcular tamanho total descompactado (proteção zip bomb)
+            total_uncompressed: int = 0
+            for info in zf.infolist():
+                total_uncompressed += info.file_size
+
+                # 5. Verificar path traversal
+                normalized = os.path.normpath(info.filename)
+                if normalized.startswith("..") or normalized.startswith("/") or normalized.startswith("\\"):
+                    raise HTTPException(
+                        400,
+                        f"ZIP contém caminho suspeito (path traversal): {info.filename}"
+                    )
+                # Verificar também componentes individuais do path
+                for part in Path(info.filename).parts:
+                    if part == "..":
+                        raise HTTPException(
+                            400,
+                            f"ZIP contém caminho suspeito (path traversal): {info.filename}"
+                        )
+
+            if total_uncompressed > settings.MAX_ZIP_UNCOMPRESSED_SIZE:
+                raise HTTPException(
+                    400,
+                    f"Tamanho descompactado ({total_uncompressed // (1024*1024)}MB) excede o limite "
+                    f"de {settings.MAX_ZIP_UNCOMPRESSED_SIZE // (1024*1024)}MB. Possível zip bomb."
+                )
+
+            # 6. Verificar ratio de compressão (zip bomb check adicional)
+            if len(content) > 0 and total_uncompressed > 0:
+                ratio = total_uncompressed / len(content)
+                if ratio > 100:
+                    raise HTTPException(
+                        400,
+                        f"Ratio de compressão suspeito ({ratio:.0f}x). Possível zip bomb."
+                    )
+
+    except zipfile.BadZipFile:
+        raise HTTPException(400, "Arquivo ZIP corrompido ou inválido")
 
 
 @router.post("/upload", response_model=UploadResponse)
@@ -36,19 +104,28 @@ async def upload_conversation(
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
     orchestrator=Depends(get_orchestrator),
+    current_user: UserInfo = Depends(get_current_user),
 ):
     """
     Recebe um arquivo .zip de exportação do WhatsApp.
     Inicia o processamento assíncrono em background.
     """
-    # Validar arquivo
-    if not file.filename.endswith(".zip"):
+    # Validar extensão
+    if not file.filename or not file.filename.endswith(".zip"):
         raise HTTPException(400, "Apenas arquivos .zip são aceitos")
 
-    # Verificar tamanho
+    # Verificar tamanho (usando MAX_UPLOAD_SIZE_MB)
+    max_size = settings.MAX_UPLOAD_SIZE_MB * 1024 * 1024
     content = await file.read()
-    if len(content) > settings.MAX_UPLOAD_SIZE:
-        raise HTTPException(413, f"Arquivo muito grande. Máximo: {settings.MAX_UPLOAD_SIZE // (1024*1024)}MB")
+    if len(content) > max_size:
+        raise HTTPException(
+            413,
+            f"Arquivo muito grande ({len(content) // (1024*1024)}MB). "
+            f"Máximo: {settings.MAX_UPLOAD_SIZE_MB}MB"
+        )
+
+    # Validar segurança do ZIP
+    _validate_zip_file(content)
 
     # Criar session ID único
     session_id = str(uuid.uuid4())
@@ -58,7 +135,10 @@ async def upload_conversation(
     with open(upload_path, "wb") as f:
         f.write(content)
 
-    logger.info(f"Upload recebido: {file.filename} ({len(content)} bytes) -> session: {session_id}")
+    logger.info(
+        f"Upload recebido de {current_user.username}: "
+        f"{file.filename} ({len(content)} bytes) -> session: {session_id}"
+    )
 
     # Criar conversa preliminar no DB
     conversation = Conversation(
@@ -135,7 +215,11 @@ async def _process_in_background(
 
 
 @router.get("/progress/{session_id}", response_model=ProcessingProgress)
-async def get_progress(session_id: str, db: AsyncSession = Depends(get_db)):
+async def get_progress(
+    session_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: UserInfo = Depends(get_current_user),
+):
     """Retorna o progresso atual do processamento"""
     # Buscar no banco para dados mais precisos
     stmt = select(Conversation).where(Conversation.session_id == session_id)
@@ -168,6 +252,7 @@ async def list_conversations(
     skip: int = 0,
     limit: int = 20,
     db: AsyncSession = Depends(get_db),
+    current_user: UserInfo = Depends(get_current_user),
 ):
     """Lista todas as conversas processadas"""
     stmt = select(Conversation).order_by(desc(Conversation.created_at)).offset(skip).limit(limit)
@@ -180,6 +265,7 @@ async def list_conversations(
 async def get_conversation(
     conversation_id: str,
     db: AsyncSession = Depends(get_db),
+    current_user: UserInfo = Depends(get_current_user),
 ):
     """Retorna detalhes completos de uma conversa"""
     stmt = select(Conversation).where(Conversation.id == conversation_id)
@@ -200,6 +286,7 @@ async def get_messages(
     media_only: bool = False,
     sender: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
+    current_user: UserInfo = Depends(get_current_user),
 ):
     """Retorna as mensagens de uma conversa com paginação"""
     from app.models import MediaType
@@ -221,6 +308,7 @@ async def get_messages(
 async def delete_conversation(
     conversation_id: str,
     db: AsyncSession = Depends(get_db),
+    current_user: UserInfo = Depends(get_current_user),
 ):
     """Remove uma conversa e todos seus dados"""
     stmt = select(Conversation).where(Conversation.id == conversation_id)

@@ -44,19 +44,17 @@ export function getMediaUrl(conversationId: string, filename: string): string {
   return `${API_BASE}/api/media/${conversationId}/${filename}`;
 }
 
-export function getMediaIcon(mediaType: MediaType): string {
-  const icons: Record<MediaType, string> = {
-    text: "MessageSquare",
-    image: "Image",
-    audio: "Volume2",
-    video: "Video",
-    document: "FileText",
-    sticker: "Image",
-    contact: "User",
-    location: "MapPin",
-    deleted: "AlertTriangle",
-  };
-  return icons[mediaType] || "FileText";
+export function getMediaIcon(mediaType?: string): string {
+  switch (mediaType?.toLowerCase()) {
+    case "image": return "🖼️";
+    case "video": return "🎬";
+    case "audio": return "🎵";
+    case "sticker": return "🏷️";
+    case "document": return "📄";
+    case "contact": return "👤";
+    case "location": return "📍";
+    default: return "📎";
+  }
 }
 
 export function getMediaLabel(mediaType: MediaType): string {
@@ -96,6 +94,16 @@ export function getSentimentColor(sentiment?: SentimentType): string {
     mixed: "text-yellow-400",
   };
   return colors[sentiment] || "text-gray-400";
+}
+
+export function getSentimentColorHex(sentiment?: string): string {
+  const colors: Record<string, string> = {
+    positive: "#4ade80",
+    negative: "#f87171",
+    neutral: "#94a3b8",
+    mixed: "#fbbf24",
+  };
+  return colors[sentiment?.toLowerCase() ?? ""] || "#94a3b8";
 }
 
 // ─── Sender helpers ─────────────────────────────────────────────────────────

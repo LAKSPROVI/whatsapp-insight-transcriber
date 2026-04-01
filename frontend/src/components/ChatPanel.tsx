@@ -106,9 +106,13 @@ export function ChatPanel({ conversationId, isOpen, onClose }: ChatPanelProps) {
   };
 
   const handleClear = async () => {
-    await clearChatHistory(conversationId);
-    setMessages([]);
-    setShowQuestions(true);
+    try {
+      await clearChatHistory(conversationId);
+      setMessages([]);
+      setShowQuestions(true);
+    } catch (error) {
+      console.error("Erro ao limpar histórico:", error);
+    }
   };
 
   const stopStreaming = () => {

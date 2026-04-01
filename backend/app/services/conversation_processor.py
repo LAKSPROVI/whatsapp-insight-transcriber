@@ -38,6 +38,13 @@ class ConversationProcessor:
         self.claude = orchestrator.claude_service
         self._progress_callbacks: Dict[str, List[Callable]] = {}
 
+    async def _notify_progress(self, callback: Callable, conversation) -> None:
+        """Fix #13: Chama progress_callback verificando se é async ou não"""
+        if asyncio.iscoroutinefunction(callback):
+            await callback(conversation)
+        else:
+            callback(conversation)
+
     async def process_upload(
         self,
         zip_path: str,
@@ -68,7 +75,7 @@ class ConversationProcessor:
             await self.db.refresh(conversation)
 
             if progress_callback:
-                await progress_callback(conversation)
+                await self._notify_progress(progress_callback, conversation)
 
             # ─── 2. Extrair ZIP e fazer parse ─────────────────────────────
             parser = WhatsAppParser()
@@ -96,7 +103,7 @@ class ConversationProcessor:
             })
 
             if progress_callback:
-                await progress_callback(conversation)
+                await self._notify_progress(progress_callback, conversation)
 
             # Salvar mensagens em batch
             messages_db = await self._save_messages(conversation.id, parsed_messages, parser)
@@ -110,7 +117,7 @@ class ConversationProcessor:
                     "progress_message": f"Iniciando {len(media_messages)} processamentos de mídia com 20 agentes paralelos...",
                 })
                 if progress_callback:
-                    await progress_callback(conversation)
+                    await self._notify_progress(progress_callback, conversation)
 
                 await self._process_media_parallel(
                     conversation,
@@ -124,7 +131,7 @@ class ConversationProcessor:
                 "progress_message": "Gerando análises avançadas...",
             })
             if progress_callback:
-                await progress_callback(conversation)
+                await self._notify_progress(progress_callback, conversation)
 
             await self._run_advanced_analysis(conversation, parsed_messages)
 
@@ -137,7 +144,7 @@ class ConversationProcessor:
             })
 
             if progress_callback:
-                await progress_callback(conversation)
+                await self._notify_progress(progress_callback, conversation)
 
             logger.info(f"✅ Conversa {conversation.id} processada com sucesso!")
             return conversation
@@ -279,7 +286,7 @@ class ConversationProcessor:
                 "progress_message": f"Processando mídias: {completed}/{total_jobs} ({len(self.orchestrator.agents)} agentes ativos)",
             })
             if progress_callback:
-                await progress_callback(conversation)
+                await self._notify_progress(progress_callback, conversation)
 
         results = await self.orchestrator.wait_for_jobs(
             job_ids,
@@ -346,7 +353,11 @@ class ConversationProcessor:
     ):
         """Executa análises avançadas em paralelo"""
         # Preparar texto da conversa
-        conv_text = self._build_conversation_text(parsed_messages[:500])  # Limitar para não estourar tokens
+        total_messages = len(parsed_messages)
+        truncated = parsed_messages[:500]  # Limitar para não estourar tokens
+        if total_messages > 500:
+            logger.warning(f"Fix #12: Truncando {total_messages} mensagens para 500 na análise avançada")  # Fix #12
+        conv_text = self._build_conversation_text(truncated)
 
         # Executar em paralelo: resumo, palavras-chave, contradições, sentimento
         tasks = [
@@ -366,14 +377,20 @@ class ConversationProcessor:
                 updates["summary"] = summary_result.get("summary", "")
                 key_moments = summary_result.get("key_moments", [])
                 updates["key_moments"] = key_moments
+            else:
+                logger.error(f"Análise falhou (summary): {summary_result}")  # Fix #11
 
             if not isinstance(keywords_result, Exception):
                 updates["keywords"] = keywords_result.get("keywords", [])
                 updates["topics"] = keywords_result.get("topics", [])
                 updates["word_frequency"] = keywords_result.get("word_frequency", {})
+            else:
+                logger.error(f"Análise falhou (keywords): {keywords_result}")  # Fix #11
 
             if not isinstance(contradictions_result, Exception):
                 updates["contradictions"] = contradictions_result.get("contradictions", [])
+            else:
+                logger.error(f"Análise falhou (contradictions): {contradictions_result}")  # Fix #11
 
             if not isinstance(sentiment_result, Exception):
                 score = sentiment_result.get("score", 0.0)
@@ -384,6 +401,8 @@ class ConversationProcessor:
                 else:
                     updates["sentiment_overall"] = SentimentType.NEUTRAL
                 updates["sentiment_score"] = score
+            else:
+                logger.error(f"Análise falhou (sentiment): {sentiment_result}")  # Fix #11
 
             await self._update_conversation(conversation, updates)
 

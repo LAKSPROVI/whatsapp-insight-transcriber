@@ -33,21 +33,39 @@ export default function Home() {
   }, []);
 
   const handleUpload = useCallback(async (file: File) => {
+    console.log("[Upload] Iniciando upload do arquivo:", file.name, file.size);
     setIsUploading(true);
 
     try {
       const response = await uploadConversation(file);
+      console.log("[Upload] Resposta do servidor:", response);
+
+      // Mudar a view IMEDIATAMENTE para "processing"
       setUiState({ currentView: "processing", sessionId: response.session_id });
+      setProgress({
+        session_id: response.session_id,
+        status: "uploading",
+        progress: 0.02,
+        progress_message: "Upload concluído, iniciando processamento...",
+        total_messages: 0,
+        processed_messages: 0,
+        active_agents: 0,
+      });
       toast.success("Upload realizado! Iniciando processamento com 20 agentes de IA...");
 
       // Iniciar polling do progresso
+      let pollErrors = 0;
       const interval = setInterval(async () => {
         try {
           const prog = await getProgress(response.session_id);
+          console.log("[Polling] Progresso:", prog.status, prog.progress);
           setProgress(prog);
+          pollErrors = 0; // Reset error counter on success
 
           if (prog.status === "completed") {
             clearInterval(interval);
+            setIsUploading(false);
+            toast.success("Processamento concluído!");
             // Buscar conversa processada
             const convs = await listConversations(0, 1);
             if (convs.length > 0) {
@@ -62,15 +80,25 @@ export default function Home() {
             listConversations(0, 10).then(setRecentConversations);
           } else if (prog.status === "failed") {
             clearInterval(interval);
-            toast.error("Erro no processamento. Por favor, tente novamente.");
+            setIsUploading(false);
+            toast.error(`Erro no processamento: ${prog.progress_message || "Erro desconhecido"}`);
           }
         } catch (err) {
-          console.error("Polling error:", err);
+          pollErrors++;
+          console.error(`[Polling] Erro #${pollErrors}:`, err);
+          // Após 10 erros consecutivos, parar o polling
+          if (pollErrors >= 10) {
+            clearInterval(interval);
+            setIsUploading(false);
+            toast.error("Conexão perdida com o servidor. Verifique e tente novamente.");
+            setUiState({ currentView: "home" });
+          }
         }
       }, POLL_INTERVAL);
 
       setPollingInterval(interval);
     } catch (err: any) {
+      console.error("[Upload] Erro:", err);
       toast.error(`Erro no upload: ${err.message}`);
       setIsUploading(false);
       setUiState({ currentView: "home" });

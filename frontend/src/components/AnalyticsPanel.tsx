@@ -67,7 +67,7 @@ export function AnalyticsPanel({ conversation }: AnalyticsPanelProps) {
         {TABS.map(({ id, label, icon: Icon }) => (
           <button
             key={id}
-            onClick={() => setActiveTab(id as any)}
+            onClick={() => setActiveTab(id as typeof activeTab)}
             className={cn(
               "flex-1 flex items-center justify-center gap-1.5 py-2 px-3 rounded-xl text-sm transition-all",
               activeTab === id
@@ -195,7 +195,7 @@ function OverviewTab({
                     <span>{p.total_messages} msgs</span>
                     <span>{p.total_media} mídias</span>
                     {p.avg_sentiment !== undefined && (
-                      <span style={{ color: getSentimentColor(p.avg_sentiment > 0.3 ? "positive" : p.avg_sentiment < -0.3 ? "negative" : "neutral") }}>
+                      <span className={getSentimentColor(p.avg_sentiment > 0.3 ? "positive" : p.avg_sentiment < -0.3 ? "negative" : "neutral")}>
                         {getSentimentEmoji(p.avg_sentiment > 0.3 ? "positive" : p.avg_sentiment < -0.3 ? "negative" : "neutral")}
                       </span>
                     )}
@@ -278,7 +278,7 @@ function SentimentTab({ analytics }: { analytics: ConversationAnalytics }) {
                   borderRadius: "8px",
                   fontSize: "12px",
                 }}
-                formatter={(value: number) => [value.toFixed(2), "Sentimento"]}
+                formatter={(value: number | string) => [Number(value).toFixed(2), "Sentimento"]}
               />
               <Area
                 type="monotone"

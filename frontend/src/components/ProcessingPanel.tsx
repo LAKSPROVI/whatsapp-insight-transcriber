@@ -91,7 +91,7 @@ export function ProcessingPanel({ progress, sessionId }: ProcessingPanelProps) {
         </div>
 
         {/* Stats */}
-        {progress?.total_messages > 0 && (
+        {(progress?.total_messages ?? 0) > 0 && (
           <div className="grid grid-cols-3 gap-3 mt-4">
             {[
               { label: "Mensagens", value: progress.total_messages, icon: "💬" },

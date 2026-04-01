@@ -4,14 +4,23 @@ Gera relatórios profissionais formatados
 """
 import io
 import os
+import re
 import logging
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Dict, Any
+from xml.sax.saxutils import escape
 
 from app.models import Conversation, Message, MediaType, SentimentType
 
 logger = logging.getLogger(__name__)
+
+
+def sanitize_for_pdf(text: str) -> str:
+    """Remove caracteres fora do BMP que não são suportados pelo ReportLab."""
+    if not text:
+        return ""
+    return re.sub(r'[^\u0000-\uFFFF]', '', text)
 
 
 def _format_timestamp(dt: Optional[datetime]) -> str:
@@ -69,6 +78,10 @@ class PDFExporter:
 
         opts = options or {}
         buffer = io.BytesIO()
+
+        def safe_para(text, style):
+            """Cria Paragraph com texto sanitizado para PDF."""
+            return Paragraph(sanitize_for_pdf(escape(str(text))), style)
 
         # ─── Configuração do documento ─────────────────────────────────
         doc = SimpleDocTemplate(
@@ -155,12 +168,12 @@ class PDFExporter:
         story = []
 
         # Cabeçalho
-        story.append(Paragraph("🔍 WhatsApp Insight Transcriber", title_style))
-        story.append(Paragraph(
-            f"Transcrição Completa da Conversa: <b>{conversation.conversation_name or 'Conversa'}</b>",
+        story.append(safe_para("WhatsApp Insight Transcriber", title_style))
+        story.append(safe_para(
+            f"Transcricao Completa da Conversa: <b>{sanitize_for_pdf(escape(conversation.conversation_name or 'Conversa'))}</b>",
             subtitle_style
         ))
-        story.append(Paragraph(
+        story.append(safe_para(
             f"Gerado em: {datetime.now().strftime('%d/%m/%Y às %H:%M:%S')}",
             subtitle_style
         ))
@@ -169,18 +182,18 @@ class PDFExporter:
 
         # ─── Metadados da Conversa ────────────────────────────────────
         if opts.get("include_statistics", True):
-            story.append(Paragraph("📊 Informações Gerais", section_header_style))
+            story.append(safe_para("Informacoes Gerais", section_header_style))
 
             participants_str = ", ".join(conversation.participants or []) or "—"
-            date_range = f"{_format_timestamp(conversation.date_start)} → {_format_timestamp(conversation.date_end)}"
+            date_range = f"{_format_timestamp(conversation.date_start)} -> {_format_timestamp(conversation.date_end)}"
 
             info_data = [
                 ["Campo", "Valor"],
-                ["Participantes", participants_str],
-                ["Período", date_range],
+                ["Participantes", sanitize_for_pdf(escape(participants_str))],
+                ["Periodo", sanitize_for_pdf(escape(date_range))],
                 ["Total de Mensagens", str(conversation.total_messages)],
-                ["Arquivos de Mídia", str(conversation.total_media)],
-                ["Sentimento Geral", _sentiment_label(conversation.sentiment_overall)],
+                ["Arquivos de Midia", str(conversation.total_media)],
+                ["Sentimento Geral", sanitize_for_pdf(escape(_sentiment_label(conversation.sentiment_overall)))],
             ]
 
             info_table = Table(info_data, colWidths=[5*cm, 12*cm])
@@ -200,28 +213,30 @@ class PDFExporter:
 
         # ─── Resumo ───────────────────────────────────────────────────
         if opts.get("include_summary", True) and conversation.summary:
-            story.append(Paragraph("📝 Resumo Executivo", section_header_style))
-            story.append(Paragraph(conversation.summary, message_style))
+            story.append(safe_para("Resumo Executivo", section_header_style))
+            story.append(safe_para(conversation.summary, message_style))
             story.append(Spacer(1, 8))
 
             if conversation.topics:
-                topics_str = " • ".join(conversation.topics)
-                story.append(Paragraph(f"<b>Tópicos:</b> {topics_str}", metadata_style))
+                topics_str = " - ".join(conversation.topics)
+                story.append(safe_para(f"<b>Topicos:</b> {sanitize_for_pdf(escape(topics_str))}", metadata_style))
             story.append(Spacer(1, 12))
 
         # ─── Contradições ─────────────────────────────────────────────
         if conversation.contradictions and opts.get("include_sentiment_analysis", True):
-            story.append(Paragraph("⚠️ Contradições Detectadas", section_header_style))
+            story.append(safe_para("Contradicoes Detectadas", section_header_style))
             for c in conversation.contradictions[:10]:
-                story.append(Paragraph(
-                    f"<b>{c.get('participant', '?')}:</b> {c.get('description', '')}",
+                participant = sanitize_for_pdf(escape(c.get('participant', '?')))
+                description = sanitize_for_pdf(escape(c.get('description', '')))
+                story.append(safe_para(
+                    f"<b>{participant}:</b> {description}",
                     media_style
                 ))
             story.append(Spacer(1, 12))
 
         # ─── Linha do Tempo ───────────────────────────────────────────
         story.append(PageBreak())
-        story.append(Paragraph("💬 Transcrição Completa", section_header_style))
+        story.append(safe_para("Transcricao Completa", section_header_style))
         story.append(HRFlowable(width="100%", thickness=1, color=colors.HexColor("#eeeeee")))
         story.append(Spacer(1, 8))
 
@@ -229,22 +244,24 @@ class PDFExporter:
             ts = _format_timestamp(msg.timestamp)
 
             if msg.media_type == MediaType.TEXT:
-                story.append(Paragraph(f"{msg.sender}", sender_style))
-                story.append(Paragraph(ts, timestamp_style))
-                story.append(Paragraph(msg.original_text or "—", message_style))
+                story.append(safe_para(f"{msg.sender}", sender_style))
+                story.append(safe_para(ts, timestamp_style))
+                story.append(safe_para(msg.original_text or "—", message_style))
 
             elif msg.media_type == MediaType.DELETED:
-                story.append(Paragraph(f"{msg.sender}", sender_style))
-                story.append(Paragraph(ts, timestamp_style))
-                story.append(Paragraph("<i>🗑️ Mensagem deletada</i>", metadata_style))
+                story.append(safe_para(f"{msg.sender}", sender_style))
+                story.append(safe_para(ts, timestamp_style))
+                story.append(safe_para("<i>Mensagem deletada</i>", metadata_style))
 
             else:
-                story.append(Paragraph(f"{msg.sender}", sender_style))
-                story.append(Paragraph(ts, timestamp_style))
+                story.append(safe_para(f"{msg.sender}", sender_style))
+                story.append(safe_para(ts, timestamp_style))
 
                 # Tipo de mídia
-                story.append(Paragraph(
-                    f"<b>{_media_type_label(msg.media_type)}</b> — {msg.media_filename or ''}",
+                media_label = sanitize_for_pdf(escape(_media_type_label(msg.media_type)))
+                media_filename = sanitize_for_pdf(escape(msg.media_filename or ''))
+                story.append(safe_para(
+                    f"<b>{media_label}</b> -- {media_filename}",
                     media_style
                 ))
 
@@ -255,28 +272,30 @@ class PDFExporter:
                     if meta.get("file_size_formatted"):
                         meta_parts.append(f"Tamanho: {meta['file_size_formatted']}")
                     if meta.get("duration_formatted"):
-                        meta_parts.append(f"Duração: {meta['duration_formatted']}")
+                        meta_parts.append(f"Duracao: {meta['duration_formatted']}")
                     if meta.get("resolution"):
-                        meta_parts.append(f"Resolução: {meta['resolution']}")
+                        meta_parts.append(f"Resolucao: {meta['resolution']}")
                     if meta.get("format"):
                         meta_parts.append(f"Formato: {meta['format'].upper()}")
                     if meta_parts:
-                        story.append(Paragraph(" | ".join(meta_parts), metadata_style))
+                        story.append(safe_para(" | ".join(meta_parts), metadata_style))
 
                 # Transcrição/Descrição
                 if msg.transcription:
-                    story.append(Paragraph(f"<b>🎤 Transcrição:</b>", media_style))
-                    story.append(Paragraph(msg.transcription, message_style))
+                    story.append(safe_para(f"<b>Transcricao:</b>", media_style))
+                    story.append(safe_para(msg.transcription, message_style))
                 if msg.description:
-                    story.append(Paragraph(f"<b>👁️ Descrição:</b>", media_style))
-                    story.append(Paragraph(msg.description, message_style))
+                    story.append(safe_para(f"<b>Descricao:</b>", media_style))
+                    story.append(safe_para(msg.description, message_style))
                 if msg.ocr_text:
-                    story.append(Paragraph(f"<b>📄 Texto (OCR):</b> {msg.ocr_text}", media_style))
+                    ocr_text = sanitize_for_pdf(escape(msg.ocr_text))
+                    story.append(safe_para(f"<b>Texto (OCR):</b> {ocr_text}", media_style))
 
             # Sentimento individual
             if opts.get("include_sentiment_analysis", True) and msg.sentiment:
-                story.append(Paragraph(
-                    f"<i>Sentimento: {_sentiment_label(msg.sentiment)}</i>",
+                sentiment_text = sanitize_for_pdf(escape(_sentiment_label(msg.sentiment)))
+                story.append(safe_para(
+                    f"<i>Sentimento: {sentiment_text}</i>",
                     metadata_style
                 ))
 
@@ -289,14 +308,16 @@ class PDFExporter:
         # Rodapé
         story.append(Spacer(1, 20))
         story.append(HRFlowable(width="100%", thickness=1, color=BRAND_COLOR))
-        story.append(Paragraph(
-            f"<i>Relatório gerado por WhatsApp Insight Transcriber v1.0 | {datetime.now().strftime('%d/%m/%Y')}</i>",
+        story.append(safe_para(
+            f"<i>Relatorio gerado por WhatsApp Insight Transcriber v1.0 | {datetime.now().strftime('%d/%m/%Y')}</i>",
             metadata_style
         ))
 
         doc.build(story)
         buffer.seek(0)
-        return buffer.getvalue()
+        content = buffer.getvalue()
+        buffer.close()
+        return content
 
 
 class DOCXExporter:
@@ -333,7 +354,10 @@ class DOCXExporter:
         # ─── Estilos ──────────────────────────────────────────────────
         def add_heading(text: str, level: int = 1):
             p = doc.add_heading(text, level=level)
-            run = p.runs[0] if p.runs else p.add_run(text)
+            if p.runs:
+                run = p.runs[0]
+            else:
+                run = p.add_run(text)
             run.font.color.rgb = RGBColor(108, 99, 255)
             return p
 
@@ -457,7 +481,7 @@ class DOCXExporter:
                     add_paragraph(f"📄 OCR: {msg.ocr_text}", italic=True, size=9)
 
             # Linha divisória
-            doc.add_paragraph("─" * 60).runs[0].font.size = Pt(6)
+            doc.add_paragraph("-" * 60).runs[0].font.size = Pt(6)
 
         # Rodapé
         doc.add_paragraph()
@@ -472,4 +496,6 @@ class DOCXExporter:
         buffer = io.BytesIO()
         doc.save(buffer)
         buffer.seek(0)
-        return buffer.getvalue()
+        content = buffer.getvalue()
+        buffer.close()
+        return content

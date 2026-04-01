@@ -184,6 +184,7 @@ class AgentOrchestrator:
         self._running = False
         self._workers: List[asyncio.Task] = []
         self._progress_callbacks: Dict[str, List[Callable]] = {}
+        self._job_counter = 0  # Fix #1: contador para desempate no PriorityQueue
 
         # Inicializar agentes
         self._initialize_agents()
@@ -214,7 +215,8 @@ class AgentOrchestrator:
         self._running = False
         # Sinalizar fim para todos os workers
         for _ in self.agents:
-            await self.job_queue.put((0, None))  # Sentinel
+            self._job_counter += 1
+            await self.job_queue.put((0, self._job_counter, None))  # Sentinel
 
         # Aguardar conclusão
         if self._workers:
@@ -229,7 +231,8 @@ class AgentOrchestrator:
         Retorna o job_id para rastreamento.
         """
         # PriorityQueue: menor número = maior prioridade
-        await self.job_queue.put((job.priority, job))
+        self._job_counter += 1
+        await self.job_queue.put((job.priority, self._job_counter, job))
         logger.debug(f"Job {job.job_id} ({job.job_type}) adicionado à fila (prioridade: {job.priority})")
         return job.job_id
 
@@ -254,6 +257,7 @@ class AgentOrchestrator:
         start_time = time.time()
         completed = set()
         total = len(job_ids)
+        last_count = 0  # Fix #3: evitar callbacks repetidos
 
         while len(completed) < total:
             if time.time() - start_time > timeout:
@@ -264,13 +268,19 @@ class AgentOrchestrator:
                 if job_id not in completed and job_id in self.results:
                     completed.add(job_id)
 
-            if progress_callback and len(completed) > 0:
+            # Fix #3: só chamar callback quando count muda
+            if progress_callback and len(completed) > 0 and len(completed) != last_count:
+                last_count = len(completed)
                 await progress_callback(len(completed), total)
 
             if len(completed) < total:
-                await asyncio.sleep(0.1)
+                await asyncio.sleep(0.5)  # Fix #3: polling menos agressivo
 
-        return {jid: self.results.get(jid) for jid in job_ids if jid in self.results}
+        # Fix #2: limpar resultados para evitar memory leak
+        collected = {jid: self.results.get(jid) for jid in job_ids if jid in self.results}
+        for jid in job_ids:
+            self.results.pop(jid, None)
+        return collected
 
     async def _worker_loop(self, agent: AIAgent):
         """Loop principal de um worker/agente"""
@@ -278,7 +288,7 @@ class AgentOrchestrator:
             try:
                 # Aguardar próximo job com timeout
                 try:
-                    priority, job = await asyncio.wait_for(
+                    priority, _counter, job = await asyncio.wait_for(
                         self.job_queue.get(),
                         timeout=1.0
                     )
@@ -287,6 +297,7 @@ class AgentOrchestrator:
 
                 # Sentinel para parar
                 if job is None:
+                    self.job_queue.task_done()  # Fix #4: task_done para sentinel
                     break
 
                 # Processar o job
