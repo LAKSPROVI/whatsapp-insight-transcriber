@@ -118,12 +118,22 @@ const SENDER_CHART_COLORS = [
   "#a5d6a7",
 ];
 
-export function getSenderColor(sender: string, variant: "badge" | "chart" = "badge"): string {
-  let hash = 0;
-  for (let i = 0; i < sender.length; i++) {
-    hash = sender.charCodeAt(i) + ((hash << 5) - hash);
+export function getSenderColor(sender: string, variantOrParticipants?: "badge" | "chart" | string[]): string {
+  const variant = typeof variantOrParticipants === "string" ? variantOrParticipants : "badge";
+  const participants = Array.isArray(variantOrParticipants) ? variantOrParticipants : undefined;
+
+  let idx: number;
+  if (participants) {
+    idx = participants.indexOf(sender);
+    if (idx < 0) idx = 0;
+    idx = idx % SENDER_COLORS.length;
+  } else {
+    let hash = 0;
+    for (let i = 0; i < sender.length; i++) {
+      hash = sender.charCodeAt(i) + ((hash << 5) - hash);
+    }
+    idx = Math.abs(hash) % SENDER_COLORS.length;
   }
-  const idx = Math.abs(hash) % SENDER_COLORS.length;
   return variant === "chart" ? SENDER_CHART_COLORS[idx] : SENDER_COLORS[idx];
 }
 
