@@ -20,15 +20,14 @@ RUN mkdir -p /app/data/uploads /app/data/media
 
 # Criar usuário não-root
 RUN adduser --system --uid 1001 appuser && \
-    chown -R appuser:nogroup /app/data
-USER appuser
+    chown -R appuser:nogroup /app /app/data
 
 # Expor porta
 EXPOSE 8000
 
 # Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+HEALTHCHECK --interval=15s --timeout=10s --start-period=30s --retries=8 \
     CMD curl -f http://localhost:8000/api/health || exit 1
 
-# Iniciar servidor
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+# Iniciar servidor (rodar como root para garantir acesso ao volume, então drop para appuser)
+CMD ["sh", "-c", "chown -R appuser:nogroup /app/data 2>/dev/null; exec su -s /bin/sh appuser -c 'uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1'"]

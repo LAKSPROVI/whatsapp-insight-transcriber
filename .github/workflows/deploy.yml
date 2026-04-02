@@ -110,6 +110,15 @@ jobs:
             echo "📦 Criando diretórios de dados..."
             mkdir -p data/uploads data/media
             
+            # Corrigir permissões do volume Docker para SQLite
+            echo "🔧 Corrigindo permissões..."
+            docker compose down || true
+            VOLUME_PATH=$(docker volume inspect whatsapp-insight-transcriber_wit_data 2>/dev/null | grep Mountpoint | awk -F'"' '{print $4}')
+            if [ -n "$VOLUME_PATH" ] && [ -d "$VOLUME_PATH" ]; then
+              chmod -R 777 "$VOLUME_PATH" || true
+              echo "✅ Permissões do volume corrigidas: $VOLUME_PATH"
+            fi
+            
             echo "🔨 Buildando imagens Docker..."
             docker compose build --no-cache
             
