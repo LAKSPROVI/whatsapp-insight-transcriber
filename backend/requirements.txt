@@ -15,6 +15,7 @@ openpyxl>=3.1.0
 httpx>=0.28.0
 python-jose[cryptography]>=3.3.0
 passlib[bcrypt]>=1.7.4
+bcrypt==4.2.1
 redis[hiredis]>=5.0.0
 structlog>=24.0.0
 
