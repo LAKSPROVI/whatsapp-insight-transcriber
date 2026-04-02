@@ -1,15 +1,17 @@
 "use client";
 
-import { useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   History, ChevronRight, Brain, Clock,
-  MessageSquare, Cpu, Activity, CheckCircle2, Trash2, LogOut
+  MessageSquare, Cpu, Activity, CheckCircle2, Trash2, LogOut, Shield
 } from "lucide-react";
 import { UploadZone } from "@/components/UploadZone";
 import { ProcessingPanel } from "@/components/ProcessingPanel";
 import { ConversationView } from "@/components/ConversationView";
 import { LoginForm } from "@/components/LoginForm";
+import { AdminPanel } from "@/components/AdminPanel";
+import { getCurrentUser } from "@/lib/api";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { useTheme } from "@/lib/theme";
@@ -45,6 +47,12 @@ export default function Home() {
     removeConversation,
   } = useAppStore();
 
+  // Initialize theme
+  useTheme();
+
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [showAdmin, setShowAdmin] = useState(false);
+
   const pollingRef = useRef<NodeJS.Timeout | null>(null);
 
   // Query para lista de conversas
@@ -66,6 +74,15 @@ export default function Home() {
   useEffect(() => {
     checkAuthentication();
   }, [checkAuthentication]);
+
+  // Verificar se é admin
+  useEffect(() => {
+    if (isAuthenticated) {
+      getCurrentUser()
+        .then((user) => setIsAdmin(user.is_admin))
+        .catch(() => setIsAdmin(false));
+    }
+  }, [isAuthenticated]);
 
   const handleLoginSuccess = useCallback(() => {
     setAuthenticated(true);
@@ -169,8 +186,8 @@ export default function Home() {
   // ─── Loading State ─────────────────────────────────────────────────────────
   if (isAuthenticated === null) {
     return (
-      <main className="min-h-screen flex items-center justify-center">
-        <div className="w-8 h-8 border-2 border-brand-500/30 border-t-brand-500 rounded-full animate-spin" />
+      <main className="min-h-screen flex items-center justify-center" role="main" aria-busy="true">
+        <div className="w-8 h-8 border-2 border-brand-500/30 border-t-brand-500 rounded-full animate-spin" role="status" aria-label="Carregando..." />
       </main>
     );
   }
@@ -178,11 +195,20 @@ export default function Home() {
   // ─── Login ─────────────────────────────────────────────────────────────────
   if (!isAuthenticated) {
     return (
-      <main className="min-h-screen">
+      <main className="min-h-screen" role="main">
         <ErrorBoundary>
           <LoginForm onLoginSuccess={handleLoginSuccess} />
         </ErrorBoundary>
       </main>
+    );
+  }
+
+  // ─── Admin Panel ───────────────────────────────────────────────────────────
+  if (showAdmin && isAdmin) {
+    return (
+      <ErrorBoundary>
+        <AdminPanel onBack={() => setShowAdmin(false)} />
+      </ErrorBoundary>
     );
   }
 
@@ -202,9 +228,9 @@ export default function Home() {
   }
 
   return (
-    <main className="min-h-screen">
+    <main className="min-h-screen" role="main">
       {/* Navigation Header */}
-      <nav className="glass-dark border-b border-brand-500/10 px-6 py-4 sticky top-0 z-30">
+      <nav className="glass-dark border-b border-brand-500/10 px-6 py-4 sticky top-0 z-30" role="navigation" aria-label="Navegação principal">
         <div className="max-w-6xl mx-auto flex items-center justify-between">
           {/* Logo */}
           <motion.div
@@ -212,7 +238,7 @@ export default function Home() {
             animate={{ opacity: 1, x: 0 }}
             className="flex items-center gap-3"
           >
-            <div className="w-9 h-9 rounded-xl bg-gradient-brand flex items-center justify-center shadow-brand">
+            <div className="w-9 h-9 rounded-xl bg-gradient-brand flex items-center justify-center shadow-brand" aria-hidden="true">
               <Brain className="w-5 h-5 text-white" />
             </div>
             <div>
@@ -221,21 +247,32 @@ export default function Home() {
             </div>
           </motion.div>
 
-          {/* Status + Logout */}
+          {/* Status + Theme + Logout */}
           <div className="flex items-center gap-3">
-            <div className="flex items-center gap-1.5 text-xs text-accent-400">
-              <span className="w-1.5 h-1.5 rounded-full bg-accent-400 animate-pulse" />
+            <div className="flex items-center gap-1.5 text-xs text-accent-400" aria-label="Status dos agentes">
+              <span className="w-1.5 h-1.5 rounded-full bg-accent-400 animate-pulse" aria-hidden="true" />
               <span className="hidden sm:inline">20 Agentes Online</span>
             </div>
-            <div className="text-xs text-gray-500">
+            <div className="text-xs text-gray-500" aria-hidden="true">
               Claude Opus 4.6
             </div>
+            <ThemeToggle />
+            {isAdmin && (
+              <button
+                onClick={() => setShowAdmin(true)}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs text-brand-400 hover:text-brand-300 hover:bg-brand-500/10 transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
+                aria-label="Painel de administração"
+              >
+                <Shield className="w-3.5 h-3.5" aria-hidden="true" />
+                <span className="hidden sm:inline">Admin</span>
+              </button>
+            )}
             <button
               onClick={handleLogout}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs text-gray-400 hover:text-red-400 hover:bg-red-500/10 transition-all"
-              title="Sair"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs text-gray-400 hover:text-red-400 hover:bg-red-500/10 transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
+              aria-label="Sair da conta"
             >
-              <LogOut className="w-3.5 h-3.5" />
+              <LogOut className="w-3.5 h-3.5" aria-hidden="true" />
               <span className="hidden sm:inline">Sair</span>
             </button>
           </div>
@@ -378,13 +415,15 @@ export default function Home() {
                   <History className="w-5 h-5 text-brand-400" />
                   <h2 className="font-bold text-gray-200">Conversas Recentes</h2>
                 </div>
-                <div className="grid gap-3">
+                <div className="grid gap-3" role="list" aria-label="Lista de conversas recentes">
                   {recentConversations.map((conv) => (
                     <motion.button
                       key={conv.id}
                       whileHover={{ scale: 1.01, x: 4 }}
                       onClick={() => navigateToConversation(conv.id)}
-                      className="glass rounded-2xl p-4 text-left w-full hover:border-brand-500/30 transition-all group"
+                      className="glass rounded-2xl p-4 text-left w-full hover:border-brand-500/30 transition-all group focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
+                      role="listitem"
+                      aria-label={`Abrir conversa: ${conv.conversation_name || conv.original_filename}, ${conv.total_messages} mensagens`}
                     >
                       <div className="flex items-start justify-between gap-3">
                         <div className="flex-1 min-w-0">
@@ -393,16 +432,16 @@ export default function Home() {
                               {conv.conversation_name || conv.original_filename}
                             </p>
                             {conv.status === "completed" && (
-                              <CheckCircle2 className="w-4 h-4 text-accent-400 shrink-0" />
+                              <CheckCircle2 className="w-4 h-4 text-accent-400 shrink-0" aria-label="Concluída" />
                             )}
                           </div>
                           <div className="flex items-center gap-3 text-xs text-gray-500 mt-1.5">
                             <span className="flex items-center gap-1">
-                              <MessageSquare className="w-3 h-3" />
+                              <MessageSquare className="w-3 h-3" aria-hidden="true" />
                               {conv.total_messages} msgs
                             </span>
                             <span className="flex items-center gap-1">
-                              <Clock className="w-3 h-3" />
+                              <Clock className="w-3 h-3" aria-hidden="true" />
                               {formatRelative(conv.created_at)}
                             </span>
                           </div>
@@ -410,11 +449,12 @@ export default function Home() {
                         <div className="flex items-center gap-2">
                           <button
                             onClick={(e) => handleDeleteConversation(conv.id, e)}
-                            className="opacity-0 group-hover:opacity-100 p-1.5 rounded-lg hover:bg-red-500/20 text-gray-600 hover:text-red-400 transition-all"
+                            className="opacity-0 group-hover:opacity-100 focus:opacity-100 p-1.5 rounded-lg hover:bg-red-500/20 text-gray-600 hover:text-red-400 transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500"
+                            aria-label={`Remover conversa: ${conv.conversation_name || conv.original_filename}`}
                           >
-                            <Trash2 className="w-3.5 h-3.5" />
+                            <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
                           </button>
-                          <ChevronRight className="w-4 h-4 text-gray-600 group-hover:text-brand-400 transition-colors" />
+                          <ChevronRight className="w-4 h-4 text-gray-600 group-hover:text-brand-400 transition-colors" aria-hidden="true" />
                         </div>
                       </div>
                     </motion.button>

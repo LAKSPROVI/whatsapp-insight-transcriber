@@ -12,13 +12,12 @@ from datetime import datetime, timezone
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse
 
 from app.config import settings, validate_settings
 from app.database import init_db
 from app.dependencies import get_orchestrator, shutdown_orchestrator
-from app.routers import conversations, chat, export, auth
+from app.routers import conversations, chat, export, auth, search, templates
 from app.logging_config import setup_logging, RequestLoggingMiddleware, get_logger
 from app.exceptions import (
     AppBaseException,
@@ -50,6 +49,11 @@ async def lifespan(app: FastAPI):
     await init_db()
     logger.info("✅ Banco de dados inicializado")
 
+    # Garantir admin user no banco de dados
+    from app.auth import ensure_admin_user
+    await ensure_admin_user()
+    logger.info("✅ Usuário admin verificado/criado no banco")
+
     # Inicializar orquestrador com 20 agentes
     orchestrator = await get_orchestrator()
     logger.info(f"✅ Orquestrador iniciado com {settings.MAX_AGENTS} agentes de IA")
@@ -72,25 +76,88 @@ async def lifespan(app: FastAPI):
     logger.info("✅ Aplicação encerrada")
 
 
+# ─── Tags Metadata ────────────────────────────────────────────────────────────
+tags_metadata = [
+    {
+        "name": "auth",
+        "description": "Autenticação e gerenciamento de usuários. Login, registro e informações do usuário autenticado.",
+    },
+    {
+        "name": "conversations",
+        "description": "Upload, processamento e gerenciamento de conversas do WhatsApp. Inclui upload de ZIP, acompanhamento de progresso, listagem e exclusão.",
+    },
+    {
+        "name": "chat",
+        "description": "Chat RAG (Retrieval Augmented Generation) sobre conversas transcritas. Permite fazer perguntas sobre o conteúdo usando IA.",
+    },
+    {
+        "name": "export",
+        "description": "Exportação de transcrições em múltiplos formatos (PDF, DOCX, XLSX, CSV, HTML, JSON) e acesso a arquivos de mídia.",
+    },
+    {
+        "name": "search",
+        "description": "Pesquisa full-text em mensagens e conversas com filtros avançados, suporte a regex, paginação e highlighting.",
+    },
+    {
+        "name": "templates",
+        "description": "Templates de análise pré-configurados (jurídico, comercial, RH, etc.) para análise especializada de conversas com IA.",
+    },
+    {
+        "name": "health",
+        "description": "Endpoints de monitoramento e saúde da aplicação.",
+    },
+]
+
 # ─── App ──────────────────────────────────────────────────────────────────────
 app = FastAPI(
     title=settings.APP_NAME,
     version=settings.APP_VERSION,
     description="""
-    ## WhatsApp Insight Transcriber API
-    
-    Plataforma avançada de transcrição e análise de conversas do WhatsApp.
-    
-    ### Funcionalidades:
-    - 📤 Upload e processamento de arquivos ZIP do WhatsApp
-    - 🤖 20 agentes de IA paralelos para transcrição ultrarrápida
-    - 🎵 Transcrição de áudios
-    - 🖼️ Visão computacional para imagens (descrição + OCR)
-    - 🎬 Análise de vídeos (frames + áudio)
-    - 💬 Chat RAG sobre a conversa transcrita
-    - 📊 Análise de sentimento, palavras-chave, contradições
-    - 📄 Exportação profissional para PDF e DOCX
-    """,
+## WhatsApp Insight Transcriber API
+
+Plataforma avançada de transcrição e análise de conversas do WhatsApp com IA.
+
+### 🚀 Funcionalidades Principais
+
+| Funcionalidade | Descrição |
+|---|---|
+| 📤 **Upload** | Upload e processamento de arquivos ZIP exportados do WhatsApp |
+| 🤖 **20 Agentes IA** | Processamento paralelo ultrarrápido com múltiplos agentes |
+| 🎵 **Transcrição de Áudio** | Transcrição automática de mensagens de voz e áudio |
+| 🖼️ **Visão Computacional** | Descrição de imagens + OCR (extração de texto) |
+| 🎬 **Análise de Vídeo** | Extração de frames + transcrição de áudio de vídeos |
+| 💬 **Chat RAG** | Chat inteligente sobre a conversa usando Retrieval Augmented Generation |
+| 📊 **Analytics** | Análise de sentimento, palavras-chave, tópicos, contradições |
+| 📄 **Exportação** | PDF, DOCX, Excel, CSV, HTML e JSON com formatação profissional |
+| 🔍 **Pesquisa** | Full-text search com regex, filtros, paginação e highlighting |
+| 📋 **Templates** | Análises pré-configuradas (jurídico, comercial, RH, etc.) |
+
+### 🔐 Autenticação
+
+Todos os endpoints (exceto health check) requerem autenticação via **JWT Bearer Token**.
+
+1. Faça login em `POST /api/auth/login` com suas credenciais
+2. Use o token retornado no header: `Authorization: Bearer <token>`
+
+### 📖 Fluxo Típico
+
+1. **Login** → `POST /api/auth/login`
+2. **Upload** → `POST /api/conversations/upload` (arquivo .zip)
+3. **Acompanhar** → `GET /api/conversations/progress/{session_id}`
+4. **Explorar** → `GET /api/conversations/{id}`, `GET /api/chat/{id}/analytics`
+5. **Chat IA** → `POST /api/chat/{id}/message`
+6. **Exportar** → `POST /api/conversations/{id}/export`
+""",
+    contact={
+        "name": "WhatsApp Insight Transcriber",
+        "url": "https://github.com/whatsapp-insight-transcriber",
+        "email": "suporte@whatsapp-insight.com",
+    },
+    license_info={
+        "name": "MIT License",
+        "url": "https://opensource.org/licenses/MIT",
+    },
+    openapi_tags=tags_metadata,
     lifespan=lifespan,
     docs_url="/api/docs",
     redoc_url="/api/redoc",
@@ -114,6 +181,8 @@ app.include_router(auth.router, prefix="/api")
 app.include_router(conversations.router, prefix="/api")
 app.include_router(chat.router, prefix="/api")
 app.include_router(export.router, prefix="/api")
+app.include_router(search.router, prefix="/api")
+app.include_router(templates.router, prefix="/api")
 
 
 # ─── Exception Handlers ──────────────────────────────────────────────────────
@@ -162,8 +231,28 @@ async def generic_exception_handler(request: Request, exc: Exception):
 
 
 # ─── Health Check ─────────────────────────────────────────────────────────────
-@app.get("/api/health")
+@app.get("/api/health", tags=["health"])
 async def health_check():
+    """
+    Health check básico da aplicação.
+
+    Retorna o status geral da aplicação, incluindo versão, modelo de IA
+    configurado e estado do cache Redis.
+
+    **Não requer autenticação.**
+
+    **Exemplo de response (200):**
+    ```json
+    {
+        "status": "healthy",
+        "app": "WhatsApp Insight Transcriber",
+        "version": "2.0.0",
+        "model": "claude-sonnet-4-20250514",
+        "max_agents": 20,
+        "cache_connected": true
+    }
+    ```
+    """
     from app.services.cache_service import get_cache_stats
     cache = await get_cache_stats()
     return {
@@ -176,16 +265,52 @@ async def health_check():
     }
 
 
-@app.get("/api/cache/stats")
+@app.get("/api/cache/stats", tags=["health"])
 async def cache_stats():
-    """Retorna estatísticas detalhadas do cache Redis."""
+    """
+    Retorna estatísticas detalhadas do cache Redis.
+
+    Inclui taxa de acerto (hit rate), número de chaves armazenadas,
+    uso de memória e estado da conexão.
+
+    **Não requer autenticação.**
+    """
     from app.services.cache_service import get_cache_stats
     return await get_cache_stats()
 
 
-@app.get("/api/health/detailed")
+@app.get("/api/health/detailed", tags=["health"])
 async def detailed_health_check():
-    """Health check detalhado com verificações de infraestrutura."""
+    """
+    Health check detalhado com verificações de infraestrutura.
+
+    Realiza verificações em todos os componentes do sistema:
+    banco de dados, disco, memória, configuração, armazenamento e cache Redis.
+
+    **Não requer autenticação.**
+
+    **Exemplo de response (200):**
+    ```json
+    {
+        "status": "healthy",
+        "app": "WhatsApp Insight Transcriber",
+        "version": "2.0.0",
+        "timestamp": "2026-04-01T10:00:00Z",
+        "platform": "Linux",
+        "python_version": "3.12.0",
+        "checks": {
+            "database": {"status": "ok", "message": "Conexão ativa"},
+            "disk": {"status": "ok", "free_gb": 50.5, "used_percent": 45.2},
+            "memory": {"status": "ok", "process_rss_mb": 256.5},
+            "config": {"status": "ok", "api_key_configured": true},
+            "storage": {"upload_dir_exists": true, "media_dir_exists": true},
+            "cache": {"status": "ok", "redis_connected": true}
+        }
+    }
+    ```
+
+    **Status possíveis:** `healthy`, `degraded`
+    """
     checks: dict = {}
     overall_status = "healthy"
 
@@ -253,8 +378,9 @@ async def detailed_health_check():
     if not settings.JWT_SECRET_KEY:
         config_issues.append("JWT_SECRET_KEY não configurada")
         config_ok = False
-    if settings.SECRET_KEY == "change-me-in-production-super-secret-key":
-        config_issues.append("SECRET_KEY usando valor padrão")
+    if not settings.SECRET_KEY:
+        config_issues.append("SECRET_KEY não configurada")
+        config_ok = False
 
     checks["config"] = {
         "status": "ok" if config_ok else "warning",

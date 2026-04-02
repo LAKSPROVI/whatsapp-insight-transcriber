@@ -214,22 +214,126 @@ export interface LoginRequest {
 export interface RegisterRequest {
   username: string;
   password: string;
+  full_name?: string;
 }
 
 export interface LoginResponse {
   access_token: string;
   token_type: string;
+  expires_in: number;
+  username: string;
 }
 
 export interface RegisterResponse {
-  id: string;
+  access_token: string;
+  token_type: string;
+  expires_in: number;
   username: string;
-  message: string;
 }
 
 export interface User {
   id: string;
   username: string;
+  full_name: string;
+  is_admin: boolean;
+}
+
+export interface UserDetail {
+  id: string;
+  username: string;
+  full_name: string;
+  is_admin: boolean;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface UserUpdateRequest {
+  full_name?: string;
+  is_active?: boolean;
+  is_admin?: boolean;
+}
+
+export interface ChangePasswordRequest {
+  current_password: string;
+  new_password: string;
+}
+
+export interface AdminResetPasswordRequest {
+  new_password: string;
+}
+
+// ─── Search ──────────────────────────────────────────────────────────────────
+
+export interface SearchParams {
+  q: string;
+  conversation_id?: string;
+  sender?: string;
+  date_from?: string;
+  date_to?: string;
+  type?: MediaType;
+  regex?: boolean;
+  offset?: number;
+  limit?: number;
+}
+
+export interface SearchResultItem {
+  message_id: string;
+  conversation_id: string;
+  conversation_name?: string;
+  sequence_number: number;
+  timestamp: string;
+  sender: string;
+  text?: string;
+  highlighted_text?: string;
+  media_type: MediaType;
+  sentiment?: SentimentType;
+  score: number;
+}
+
+export interface SearchResponse {
+  query: string;
+  total: number;
+  offset: number;
+  limit: number;
+  results: SearchResultItem[];
+}
+
+export interface SearchConversationItem {
+  conversation_id: string;
+  conversation_name?: string;
+  participants?: string[];
+  total_messages: number;
+  date_start?: string;
+  date_end?: string;
+  match_count: number;
+}
+
+export interface SearchConversationsResponse {
+  query: string;
+  total: number;
+  results: SearchConversationItem[];
+}
+
+// ─── Templates ──────────────────────────────────────────────────────────────
+
+export interface Template {
+  id: string;
+  name: string;
+  description: string;
+  prompts: Record<string, string>;
+}
+
+export interface TemplateListResponse {
+  templates: Template[];
+}
+
+export interface TemplateAnalysisResult {
+  template_id: string;
+  template_name: string;
+  conversation_id: string;
+  results: Record<string, string>;
+  executed_prompts: string[];
 }
 
 // ─── UI State ─────────────────────────────────────────────────────────────────

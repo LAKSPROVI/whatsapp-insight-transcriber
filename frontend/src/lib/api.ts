@@ -11,6 +11,11 @@ import type {
   LoginResponse,
   RegisterRequest,
   RegisterResponse,
+  SearchParams,
+  SearchResponse,
+  SearchConversationsResponse,
+  TemplateListResponse,
+  TemplateAnalysisResult,
 } from "@/types";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "";
@@ -225,6 +230,64 @@ export function logout(): void {
   onUnauthorized?.();
 }
 
+export async function getCurrentUser(): Promise<import("@/types").User> {
+  return apiFetch<import("@/types").User>("/api/auth/me");
+}
+
+export async function changePassword(currentPassword: string, newPassword: string): Promise<{ message: string }> {
+  return apiFetch<{ message: string }>("/api/auth/change-password", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+  });
+}
+
+// ─── Admin User Management ──────────────────────────────────────────────────
+
+export async function adminListUsers(): Promise<import("@/types").UserDetail[]> {
+  return apiFetch<import("@/types").UserDetail[]>("/api/auth/admin/users");
+}
+
+export async function adminCreateUser(
+  username: string,
+  password: string,
+  fullName: string = ""
+): Promise<import("@/types").UserDetail> {
+  return apiFetch<import("@/types").UserDetail>("/api/auth/admin/users/create", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username, password, full_name: fullName }),
+  });
+}
+
+export async function adminUpdateUser(
+  userId: string,
+  data: import("@/types").UserUpdateRequest
+): Promise<import("@/types").UserDetail> {
+  return apiFetch<import("@/types").UserDetail>(`/api/auth/admin/users/${userId}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+}
+
+export async function adminResetPassword(
+  userId: string,
+  newPassword: string
+): Promise<{ message: string }> {
+  return apiFetch<{ message: string }>(`/api/auth/admin/users/${userId}/reset-password`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ new_password: newPassword }),
+  });
+}
+
+export async function adminDeleteUser(userId: string): Promise<{ message: string }> {
+  return apiFetch<{ message: string }>(`/api/auth/admin/users/${userId}`, {
+    method: "DELETE",
+  });
+}
+
 // ─── Conversations ──────────────────────────────────────────────────────────
 
 export async function uploadConversation(file: File): Promise<UploadResponse> {
@@ -431,4 +494,54 @@ export async function exportConversation(
   a.download = `relatorio_conversa.${ext}`;
   a.click();
   URL.revokeObjectURL(url);
+}
+
+// ─── Search ─────────────────────────────────────────────────────────────────
+
+export async function searchMessages(params: SearchParams): Promise<SearchResponse> {
+  const qs = new URLSearchParams();
+  qs.set("q", params.q);
+  if (params.conversation_id) qs.set("conversation_id", params.conversation_id);
+  if (params.sender) qs.set("sender", params.sender);
+  if (params.date_from) qs.set("date_from", params.date_from);
+  if (params.date_to) qs.set("date_to", params.date_to);
+  if (params.type) qs.set("type", params.type);
+  if (params.regex) qs.set("regex", "true");
+  if (params.offset) qs.set("offset", String(params.offset));
+  if (params.limit) qs.set("limit", String(params.limit));
+  return apiFetch<SearchResponse>(`/api/search/messages?${qs}`);
+}
+
+export async function searchConversations(
+  q: string,
+  dateFrom?: string,
+  dateTo?: string
+): Promise<SearchConversationsResponse> {
+  const qs = new URLSearchParams({ q });
+  if (dateFrom) qs.set("date_from", dateFrom);
+  if (dateTo) qs.set("date_to", dateTo);
+  return apiFetch<SearchConversationsResponse>(`/api/search/conversations?${qs}`);
+}
+
+// ─── Templates ──────────────────────────────────────────────────────────────
+
+export async function getTemplates(): Promise<TemplateListResponse> {
+  return apiFetch<TemplateListResponse>("/api/templates");
+}
+
+export async function analyzeWithTemplate(
+  templateId: string,
+  conversationId: string,
+  promptKeys?: string[]
+): Promise<TemplateAnalysisResult> {
+  return apiFetch<TemplateAnalysisResult>(
+    `/api/templates/${templateId}/analyze/${conversationId}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(promptKeys ? { prompt_keys: promptKeys } : {}),
+    },
+    PROCESSING_TIMEOUT,
+    0
+  );
 }

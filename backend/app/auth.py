@@ -1,5 +1,6 @@
 """
 Módulo de autenticação JWT para o WhatsApp Insight Transcriber
+Persistência em banco de dados SQLAlchemy.
 """
 import logging
 from datetime import datetime, timedelta, timezone
@@ -10,8 +11,11 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from pydantic import BaseModel, Field, field_validator
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.database import AsyncSessionLocal
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +62,33 @@ class RegisterRequest(BaseModel):
         return v
 
 
+class ChangePasswordRequest(BaseModel):
+    current_password: str = Field(..., min_length=6, max_length=128)
+    new_password: str = Field(..., min_length=8, max_length=128)
+
+    @field_validator("new_password")
+    @classmethod
+    def validate_new_password(cls, v: str) -> str:
+        if not any(c.isupper() for c in v):
+            raise ValueError("Nova senha deve conter ao menos uma letra maiúscula")
+        if not any(c.isdigit() for c in v):
+            raise ValueError("Nova senha deve conter ao menos um número")
+        return v
+
+
+class AdminResetPasswordRequest(BaseModel):
+    new_password: str = Field(..., min_length=8, max_length=128)
+
+    @field_validator("new_password")
+    @classmethod
+    def validate_new_password(cls, v: str) -> str:
+        if not any(c.isupper() for c in v):
+            raise ValueError("Nova senha deve conter ao menos uma letra maiúscula")
+        if not any(c.isdigit() for c in v):
+            raise ValueError("Nova senha deve conter ao menos um número")
+        return v
+
+
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
@@ -71,21 +102,23 @@ class UserInfo(BaseModel):
     is_admin: bool = False
 
 
-# ─── Store de Usuários em Memória ─────────────────────────────────────────────
-# Em produção, usar banco de dados. Aqui usamos dict em memória + admin via env.
-_users_store: dict[str, dict] = {}
+class UserDetail(BaseModel):
+    id: str
+    username: str
+    full_name: str = ""
+    is_admin: bool = False
+    is_active: bool = True
+    created_at: str
+    updated_at: str
 
 
-def _ensure_admin_user() -> None:
-    """Garante que o usuário admin existe no store."""
-    admin_user = settings.ADMIN_USERNAME
-    if admin_user not in _users_store:
-        _users_store[admin_user] = {
-            "username": admin_user,
-            "hashed_password": pwd_context.hash(settings.ADMIN_PASSWORD),
-            "full_name": "Administrador",
-            "is_admin": True,
-        }
+class UserUpdateRequest(BaseModel):
+    full_name: Optional[str] = None
+    is_active: Optional[bool] = None
+    is_admin: Optional[bool] = None
+
+
+# ─── Password Helpers ─────────────────────────────────────────────────────────
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
@@ -94,6 +127,9 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 
 def hash_password(password: str) -> str:
     return pwd_context.hash(password)
+
+
+# ─── JWT Helpers ──────────────────────────────────────────────────────────────
 
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
@@ -122,7 +158,98 @@ def verify_token(token: str) -> Optional[dict]:
         return None
 
 
-# ─── Dependency para FastAPI ──────────────────────────────────────────────────
+# ─── Database Operations ─────────────────────────────────────────────────────
+
+
+async def get_user_by_username(session: AsyncSession, username: str):
+    """Busca um usuário pelo username no banco de dados."""
+    from app.models import User
+    result = await session.execute(select(User).where(User.username == username))
+    return result.scalar_one_or_none()
+
+
+async def get_user_by_id(session: AsyncSession, user_id: str):
+    """Busca um usuário pelo ID."""
+    from app.models import User
+    result = await session.execute(select(User).where(User.id == user_id))
+    return result.scalar_one_or_none()
+
+
+async def get_all_users(session: AsyncSession):
+    """Retorna todos os usuários."""
+    from app.models import User
+    result = await session.execute(select(User).order_by(User.created_at.desc()))
+    return result.scalars().all()
+
+
+async def create_user(
+    session: AsyncSession,
+    username: str,
+    password: str,
+    full_name: str = "",
+    is_admin: bool = False,
+) -> "User":
+    """Cria um novo usuário no banco de dados."""
+    from app.models import User
+    user = User(
+        username=username,
+        hashed_password=hash_password(password),
+        full_name=full_name,
+        is_admin=is_admin,
+        is_active=True,
+    )
+    session.add(user)
+    await session.flush()
+    return user
+
+
+async def authenticate_user(session: AsyncSession, username: str, password: str):
+    """Autentica um usuário verificando username e senha."""
+    user = await get_user_by_username(session, username)
+    if not user:
+        return None
+    if not user.is_active:
+        return None
+    if not verify_password(password, user.hashed_password):
+        return None
+    return user
+
+
+async def ensure_admin_user() -> None:
+    """Garante que o usuário admin existe no banco. Chamado no startup."""
+    async with AsyncSessionLocal() as session:
+        try:
+            existing = await get_user_by_username(session, settings.ADMIN_USERNAME)
+            if not existing:
+                await create_user(
+                    session,
+                    username=settings.ADMIN_USERNAME,
+                    password=settings.ADMIN_PASSWORD,
+                    full_name="Administrador",
+                    is_admin=True,
+                )
+                await session.commit()
+                logger.info(f"Admin user '{settings.ADMIN_USERNAME}' criado no banco de dados")
+            else:
+                # Atualizar senha do admin se mudou no .env
+                if not verify_password(settings.ADMIN_PASSWORD, existing.hashed_password):
+                    existing.hashed_password = hash_password(settings.ADMIN_PASSWORD)
+                    existing.is_admin = True
+                    await session.commit()
+                    logger.info(f"Senha do admin '{settings.ADMIN_USERNAME}' atualizada")
+                elif not existing.is_admin:
+                    existing.is_admin = True
+                    await session.commit()
+                    logger.info(f"User '{settings.ADMIN_USERNAME}' promovido a admin")
+                else:
+                    logger.info(f"Admin user '{settings.ADMIN_USERNAME}' já existe no banco")
+        except Exception as e:
+            await session.rollback()
+            logger.error(f"Erro ao garantir admin user: {e}")
+            raise
+
+
+# ─── FastAPI Dependencies ─────────────────────────────────────────────────────
 
 
 async def get_current_user(
@@ -147,44 +274,34 @@ async def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    _ensure_admin_user()
-    user = _users_store.get(username)
-    if user is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Usuário não encontrado",
-            headers={"WWW-Authenticate": "Bearer"},
+    async with AsyncSessionLocal() as session:
+        user = await get_user_by_username(session, username)
+        if user is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Usuário não encontrado",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        if not user.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Usuário desativado. Contate o administrador.",
+            )
+
+        return UserInfo(
+            username=user.username,
+            full_name=user.full_name or "",
+            is_admin=user.is_admin,
         )
 
-    return UserInfo(
-        username=user["username"],
-        full_name=user.get("full_name", ""),
-        is_admin=user.get("is_admin", False),
-    )
 
-
-# ─── Funções de Login/Register ────────────────────────────────────────────────
-
-
-def authenticate_user(username: str, password: str) -> Optional[dict]:
-    _ensure_admin_user()
-    user = _users_store.get(username)
-    if not user:
-        return None
-    if not verify_password(password, user["hashed_password"]):
-        return None
-    return user
-
-
-def register_user(username: str, password: str, full_name: str = "") -> dict:
-    _ensure_admin_user()
-    if username in _users_store:
-        raise ValueError("Usuário já existe")
-    user = {
-        "username": username,
-        "hashed_password": hash_password(password),
-        "full_name": full_name,
-        "is_admin": False,
-    }
-    _users_store[username] = user
-    return user
+async def get_current_admin(
+    current_user: UserInfo = Depends(get_current_user),
+) -> UserInfo:
+    """Dependency que verifica se o usuário é admin."""
+    if not current_user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Acesso restrito a administradores",
+        )
+    return current_user

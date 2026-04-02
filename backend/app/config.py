@@ -46,7 +46,7 @@ class Settings(BaseSettings):
     APP_NAME: str = "WhatsApp Insight Transcriber"
     APP_VERSION: str = "1.0.0"
     DEBUG: bool = Field(default=False, env="DEBUG")
-    SECRET_KEY: str = Field(default="change-me-in-production-super-secret-key", env="SECRET_KEY")
+    SECRET_KEY: str = Field(default="", env="SECRET_KEY")
 
     # ─── JWT ──────────────────────────────────────────────────
     JWT_SECRET_KEY: str = Field(default="", env="JWT_SECRET_KEY")
@@ -97,6 +97,11 @@ def validate_settings(s: "Settings") -> None:
         raise ValueError(
             "ADMIN_PASSWORD não configurada! "
             "Defina a variável de ambiente ADMIN_PASSWORD ou configure no .env"
+        )
+    if not s.SECRET_KEY:
+        raise ValueError(
+            "SECRET_KEY não configurada! "
+            "Defina a variável de ambiente SECRET_KEY ou configure no .env"
         )
 
 
