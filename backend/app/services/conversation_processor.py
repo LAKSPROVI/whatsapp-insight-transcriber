@@ -9,7 +9,7 @@ import os
 import shutil
 import uuid
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Callable, Dict, Any, List
 
@@ -67,22 +67,37 @@ class ConversationProcessor:
         failed_steps: List[str] = []
 
         try:
-            # ─── 1. Criar registro na DB ──────────────────────────────────
+            # ─── 1. Buscar registro existente ou criar na DB ──────────────
             step = "create_record"
             extract_dir = str(settings.MEDIA_DIR / session_id)
 
-            conversation = Conversation(
-                session_id=session_id,
-                original_filename=original_filename,
-                upload_path=zip_path,
-                extract_path=extract_dir,
-                status=ProcessingStatus.PARSING,
-                progress=0.05,
-                progress_message="Descompactando arquivo...",
-            )
-            self.db.add(conversation)
-            await self.db.commit()
-            await self.db.refresh(conversation)
+            # O router de upload já cria o Conversation — buscar pelo session_id
+            stmt = select(Conversation).where(Conversation.session_id == session_id)
+            result = await self.db.execute(stmt)
+            conversation = result.scalar_one_or_none()
+
+            if conversation:
+                # Atualizar registro existente
+                conversation.status = ProcessingStatus.PARSING
+                conversation.progress = 0.05
+                conversation.progress_message = "Descompactando arquivo..."
+                conversation.extract_path = extract_dir
+                await self.db.commit()
+                await self.db.refresh(conversation)
+            else:
+                # Fallback: criar novo se chamado diretamente (sem router)
+                conversation = Conversation(
+                    session_id=session_id,
+                    original_filename=original_filename,
+                    upload_path=zip_path,
+                    extract_path=extract_dir,
+                    status=ProcessingStatus.PARSING,
+                    progress=0.05,
+                    progress_message="Descompactando arquivo...",
+                )
+                self.db.add(conversation)
+                await self.db.commit()
+                await self.db.refresh(conversation)
 
             if progress_callback:
                 await self._notify_progress(progress_callback, conversation)
@@ -204,7 +219,7 @@ class ConversationProcessor:
                 "status": status,
                 "progress": 1.0,
                 "progress_message": progress_msg,
-                "completed_at": datetime.utcnow(),
+                "completed_at": datetime.now(timezone.utc),
             })
 
             if progress_callback:
@@ -216,12 +231,12 @@ class ConversationProcessor:
             )
             return conversation
 
-        except (ParserError, ProcessingError, APIError):
+        except (ParserError, ProcessingError, APIError) as e:
             # Exceções de negócio — repassar com status atualizado
             if conversation:
                 await self._update_conversation(conversation, {
                     "status": ProcessingStatus.FAILED,
-                    "progress_message": f"Erro na etapa '{step}': {str(conversation)}",
+                    "progress_message": f"Erro na etapa '{step}': {str(e)}",
                 })
             raise
 
@@ -544,7 +559,7 @@ class ConversationProcessor:
             try:
                 for key, value in updates.items():
                     setattr(conversation, key, value)
-                conversation.updated_at = datetime.utcnow()
+                conversation.updated_at = datetime.now(timezone.utc)
                 await self.db.commit()
                 await self.db.refresh(conversation)
                 return

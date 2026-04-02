@@ -165,6 +165,18 @@ class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=10000)
     include_context: bool = True
 
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "conversation_id": "conv-abc123",
+                    "message": "Quais foram os principais tópicos discutidos nesta conversa?",
+                    "include_context": True,
+                }
+            ]
+        }
+    }
+
     @field_validator("message")
     @classmethod
     def sanitize_message(cls, v: str) -> str:
@@ -200,11 +212,25 @@ class ChatHistoryResponse(BaseModel):
 # ─── Export Schemas ───────────────────────────────────────────────────────────
 class ExportRequest(BaseModel):
     conversation_id: Optional[str] = Field(default=None, max_length=100)
-    format: str = Field(..., pattern="^(pdf|docx)$")
+    format: str = Field(..., pattern="^(pdf|docx|xlsx|csv|html|json)$")
     include_media_descriptions: bool = True
     include_sentiment_analysis: bool = True
     include_summary: bool = True
     include_statistics: bool = True
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "format": "pdf",
+                    "include_media_descriptions": True,
+                    "include_sentiment_analysis": True,
+                    "include_summary": True,
+                    "include_statistics": True,
+                }
+            ]
+        }
+    }
 
     @field_validator("conversation_id")
     @classmethod
@@ -259,3 +285,106 @@ class OrchestratorStatus(BaseModel):
     idle_agents: int
     queue_size: int
     agents: List[AgentStatus]
+
+
+# ─── Search Schemas ──────────────────────────────────────────────────────────
+
+class SearchMessageRequest(BaseModel):
+    q: str = Field(..., min_length=1, max_length=500)
+    conversation_id: Optional[str] = Field(default=None, max_length=100)
+    sender: Optional[str] = Field(default=None, max_length=200)
+    date_from: Optional[datetime] = None
+    date_to: Optional[datetime] = None
+    message_type: Optional[str] = Field(default=None, max_length=20)
+    regex: bool = False
+    offset: int = Field(default=0, ge=0)
+    limit: int = Field(default=50, ge=1, le=200)
+    sort_by: str = Field(default="relevance", pattern="^(relevance|chronological)$")
+
+    @field_validator("conversation_id")
+    @classmethod
+    def validate_conv_id(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and not re.match(r"^[a-zA-Z0-9_-]+$", v):
+            raise ValueError("ID de conversa contém caracteres inválidos")
+        return v
+
+
+class SearchResultItem(BaseModel):
+    message_id: str
+    conversation_id: str
+    conversation_name: Optional[str] = None
+    sequence_number: int
+    timestamp: datetime
+    sender: str
+    text: Optional[str] = None
+    highlighted_text: Optional[str] = None
+    media_type: MediaType
+    sentiment: Optional[SentimentType] = None
+    score: float = 0.0
+
+    class Config:
+        from_attributes = True
+
+
+class SearchResponse(BaseModel):
+    query: str
+    total: int
+    offset: int
+    limit: int
+    results: List[SearchResultItem]
+
+
+class SearchConversationItem(BaseModel):
+    conversation_id: str
+    conversation_name: Optional[str] = None
+    participants: Optional[List[str]] = None
+    total_messages: int
+    date_start: Optional[datetime] = None
+    date_end: Optional[datetime] = None
+    match_count: int = 0
+
+    class Config:
+        from_attributes = True
+
+
+class SearchConversationsResponse(BaseModel):
+    query: str
+    total: int
+    results: List[SearchConversationItem]
+
+
+# ─── Template Schemas ────────────────────────────────────────────────────────
+
+class TemplatePrompts(BaseModel):
+    summary: Optional[str] = None
+    entities: Optional[str] = None
+    timeline: Optional[str] = None
+    contradictions: Optional[str] = None
+    sentiment: Optional[str] = None
+    recommendations: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class TemplateResponse(BaseModel):
+    id: str
+    name: str
+    description: str
+    prompts: Dict[str, str]
+
+
+class TemplateListResponse(BaseModel):
+    templates: List[TemplateResponse]
+
+
+class TemplateAnalysisRequest(BaseModel):
+    prompt_keys: Optional[List[str]] = None  # quais prompts executar, None = todos
+
+
+class TemplateAnalysisResponse(BaseModel):
+    template_id: str
+    template_name: str
+    conversation_id: str
+    results: Dict[str, str]
+    executed_prompts: List[str]

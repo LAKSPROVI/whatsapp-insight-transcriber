@@ -150,10 +150,12 @@ export function ChatPanel({ conversationId, isOpen, onClose }: ChatPanelProps) {
           exit={{ x: "100%", opacity: 0 }}
           transition={{ type: "spring", damping: 30, stiffness: 300 }}
           className="fixed right-0 top-0 bottom-0 w-full max-w-md glass-dark border-l border-brand-500/20 z-50 flex flex-col shadow-2xl"
+          role="complementary"
+          aria-label="Chat com IA sobre a conversa"
         >
           {/* Header */}
           <div className="flex items-center gap-3 p-4 border-b border-brand-500/10">
-            <div className="w-9 h-9 rounded-xl bg-brand-500/20 border border-brand-500/30 flex items-center justify-center">
+            <div className="w-9 h-9 rounded-xl bg-brand-500/20 border border-brand-500/30 flex items-center justify-center" aria-hidden="true">
               <Bot className="w-5 h-5 text-brand-400" />
             </div>
             <div className="flex-1">
@@ -164,17 +166,18 @@ export function ChatPanel({ conversationId, isOpen, onClose }: ChatPanelProps) {
               {chatMessages.length > 0 && (
                 <button
                   onClick={handleClear}
-                  className="p-1.5 rounded-lg hover:bg-red-500/20 text-gray-500 hover:text-red-400 transition-colors"
-                  title="Limpar chat"
+                  className="p-1.5 rounded-lg hover:bg-red-500/20 text-gray-500 hover:text-red-400 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500"
+                  aria-label="Limpar histórico do chat"
                 >
-                  <Trash2 className="w-4 h-4" />
+                  <Trash2 className="w-4 h-4" aria-hidden="true" />
                 </button>
               )}
               <button
                 onClick={onClose}
-                className="p-1.5 rounded-lg hover:bg-dark-600 text-gray-500 hover:text-white transition-colors"
+                className="p-1.5 rounded-lg hover:bg-dark-600 text-gray-500 hover:text-white transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
+                aria-label="Fechar painel de chat"
               >
-                <X className="w-4 h-4" />
+                <X className="w-4 h-4" aria-hidden="true" />
               </button>
             </div>
           </div>
@@ -310,6 +313,7 @@ export function ChatPanel({ conversationId, isOpen, onClose }: ChatPanelProps) {
                 placeholder="Pergunte sobre a conversa... (Enter para enviar)"
                 rows={1}
                 disabled={isLoading}
+                aria-label="Mensagem para o assistente de IA"
                 className={cn(
                   "flex-1 bg-dark-600/80 border border-dark-400/30 rounded-xl px-4 py-2.5",
                   "text-sm text-gray-200 placeholder-gray-600 resize-none",
@@ -322,6 +326,7 @@ export function ChatPanel({ conversationId, isOpen, onClose }: ChatPanelProps) {
               <button
                 onClick={() => sendMessage()}
                 disabled={!input.trim() || isLoading}
+                aria-label="Enviar mensagem"
                 className={cn(
                   "w-10 h-10 rounded-xl flex items-center justify-center transition-all",
                   input.trim() && !isLoading

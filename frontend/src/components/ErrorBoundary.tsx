@@ -42,8 +42,8 @@ export class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoun
       const isDev = process.env.NODE_ENV === "development";
 
       return (
-        <div className="flex flex-col items-center justify-center p-6 rounded-2xl glass border border-red-500/20 bg-red-500/5 min-h-[120px]">
-          <div className="w-12 h-12 rounded-full bg-red-500/10 border border-red-500/30 flex items-center justify-center mb-3">
+        <div className="flex flex-col items-center justify-center p-6 rounded-2xl glass border border-red-500/20 bg-red-500/5 min-h-[120px]" role="alert" aria-live="assertive">
+          <div className="w-12 h-12 rounded-full bg-red-500/10 border border-red-500/30 flex items-center justify-center mb-3" aria-hidden="true">
             <AlertTriangle className="w-6 h-6 text-red-400" />
           </div>
           <h3 className="text-sm font-semibold text-red-300 mb-1">

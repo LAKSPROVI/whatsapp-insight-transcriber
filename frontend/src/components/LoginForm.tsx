@@ -63,7 +63,7 @@ export function LoginForm({ onLoginSuccess }: LoginFormProps) {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center p-6">
+    <div className="min-h-screen flex items-center justify-center p-6" role="main">
       <motion.div
         initial={{ opacity: 0, y: 20, scale: 0.95 }}
         animate={{ opacity: 1, y: 0, scale: 1 }}
@@ -72,7 +72,7 @@ export function LoginForm({ onLoginSuccess }: LoginFormProps) {
       >
         {/* Logo */}
         <div className="text-center mb-8">
-          <div className="relative inline-block mb-4">
+          <div className="relative inline-block mb-4" aria-hidden="true">
             <div className="w-20 h-20 rounded-3xl bg-gradient-brand flex items-center justify-center shadow-glow mx-auto">
               <Brain className="w-10 h-10 text-white" />
             </div>
@@ -95,47 +95,58 @@ export function LoginForm({ onLoginSuccess }: LoginFormProps) {
             <motion.div
               initial={{ opacity: 0, y: -10 }}
               animate={{ opacity: 1, y: 0 }}
+              role="alert"
+              aria-live="assertive"
+              id="form-error"
               className="flex items-center gap-2 p-3 mb-4 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 text-sm"
             >
-              <AlertCircle className="w-4 h-4 shrink-0" />
+              <AlertCircle className="w-4 h-4 shrink-0" aria-hidden="true" />
               <span>{error}</span>
             </motion.div>
           )}
 
-          <form onSubmit={handleSubmit} className="space-y-4">
+          <form onSubmit={handleSubmit} className="space-y-4" aria-describedby={error ? "form-error" : undefined}>
             <div>
-              <label className="block text-sm font-medium text-gray-400 mb-1.5">
+              <label htmlFor="username" className="block text-sm font-medium text-gray-400 mb-1.5">
                 Usuário
               </label>
               <input
+                id="username"
                 type="text"
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
                 placeholder="Seu nome de usuário"
                 autoComplete="username"
+                required
+                aria-required="true"
                 className="w-full px-4 py-3 rounded-xl bg-dark-700/50 border border-dark-500/50 text-white placeholder-gray-600 focus:border-brand-500/50 focus:outline-none focus:ring-1 focus:ring-brand-500/30 transition-all"
               />
             </div>
 
             <div>
-              <label className="block text-sm font-medium text-gray-400 mb-1.5">
+              <label htmlFor="password" className="block text-sm font-medium text-gray-400 mb-1.5">
                 Senha
               </label>
               <div className="relative">
                 <input
+                  id="password"
                   type={showPassword ? "text" : "password"}
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder="Sua senha"
                   autoComplete={isRegister ? "new-password" : "current-password"}
+                  required
+                  aria-required="true"
+                  minLength={6}
                   className="w-full px-4 py-3 rounded-xl bg-dark-700/50 border border-dark-500/50 text-white placeholder-gray-600 focus:border-brand-500/50 focus:outline-none focus:ring-1 focus:ring-brand-500/30 transition-all pr-12"
                 />
                 <button
                   type="button"
                   onClick={() => setShowPassword(!showPassword)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300 transition-colors"
+                  aria-label={showPassword ? "Ocultar senha" : "Mostrar senha"}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 rounded"
                 >
-                  {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  {showPassword ? <EyeOff className="w-4 h-4" aria-hidden="true" /> : <Eye className="w-4 h-4" aria-hidden="true" />}
                 </button>
               </div>
             </div>
@@ -146,15 +157,18 @@ export function LoginForm({ onLoginSuccess }: LoginFormProps) {
                 animate={{ opacity: 1, height: "auto" }}
                 exit={{ opacity: 0, height: 0 }}
               >
-                <label className="block text-sm font-medium text-gray-400 mb-1.5">
+                <label htmlFor="confirm-password" className="block text-sm font-medium text-gray-400 mb-1.5">
                   Confirmar Senha
                 </label>
                 <input
+                  id="confirm-password"
                   type={showPassword ? "text" : "password"}
                   value={confirmPassword}
                   onChange={(e) => setConfirmPassword(e.target.value)}
                   placeholder="Confirme sua senha"
                   autoComplete="new-password"
+                  required={isRegister}
+                  aria-required={isRegister}
                   className="w-full px-4 py-3 rounded-xl bg-dark-700/50 border border-dark-500/50 text-white placeholder-gray-600 focus:border-brand-500/50 focus:outline-none focus:ring-1 focus:ring-brand-500/30 transition-all"
                 />
               </motion.div>
@@ -163,18 +177,19 @@ export function LoginForm({ onLoginSuccess }: LoginFormProps) {
             <button
               type="submit"
               disabled={loading}
-              className="w-full py-3 rounded-xl bg-gradient-brand text-white font-bold shadow-brand hover:shadow-glow transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+              aria-busy={loading}
+              className="w-full py-3 rounded-xl bg-gradient-brand text-white font-bold shadow-brand hover:shadow-glow transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-2 focus-visible:ring-offset-dark-900"
             >
               {loading ? (
                 <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
               ) : isRegister ? (
                 <>
-                  <UserPlus className="w-4 h-4" />
+                  <UserPlus className="w-4 h-4" aria-hidden="true" />
                   Criar Conta
                 </>
               ) : (
                 <>
-                  <LogIn className="w-4 h-4" />
+                  <LogIn className="w-4 h-4" aria-hidden="true" />
                   Entrar
                 </>
               )}
@@ -188,7 +203,7 @@ export function LoginForm({ onLoginSuccess }: LoginFormProps) {
                 setError(null);
                 setConfirmPassword("");
               }}
-              className="text-sm text-brand-400 hover:text-brand-300 transition-colors"
+              className="text-sm text-brand-400 hover:text-brand-300 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 rounded"
             >
               {isRegister
                 ? "Já tem uma conta? Faça login"

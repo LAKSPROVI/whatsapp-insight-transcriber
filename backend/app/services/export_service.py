@@ -499,3 +499,432 @@ class DOCXExporter:
         content = buffer.getvalue()
         buffer.close()
         return content
+
+
+class ExcelExporter:
+    """Gera arquivos Excel (.xlsx) com openpyxl"""
+
+    def generate(
+        self,
+        conversation: Conversation,
+        messages: List[Message],
+        options: Dict[str, bool] = None,
+    ) -> bytes:
+        """Gera o XLSX e retorna como bytes"""
+        try:
+            from openpyxl import Workbook
+            from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+            from openpyxl.utils import get_column_letter
+        except ImportError:
+            raise RuntimeError("openpyxl não instalado. Execute: pip install openpyxl")
+
+        opts = options or {}
+        wb = Workbook()
+
+        # ─── Cores e estilos ─────────────────────────────────────────
+        BRAND_COLOR = "6C63FF"
+        HEADER_FONT = Font(bold=True, color="FFFFFF", size=11)
+        HEADER_FILL = PatternFill(start_color=BRAND_COLOR, end_color=BRAND_COLOR, fill_type="solid")
+        ALT_FILL_1 = PatternFill(start_color="F8F9FF", end_color="F8F9FF", fill_type="solid")
+        ALT_FILL_2 = PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
+        THIN_BORDER = Border(
+            left=Side(style="thin", color="DDDDDD"),
+            right=Side(style="thin", color="DDDDDD"),
+            top=Side(style="thin", color="DDDDDD"),
+            bottom=Side(style="thin", color="DDDDDD"),
+        )
+
+        def auto_width(ws):
+            for col in ws.columns:
+                max_length = 0
+                col_letter = get_column_letter(col[0].column)
+                for cell in col:
+                    try:
+                        cell_len = len(str(cell.value or ""))
+                        if cell_len > max_length:
+                            max_length = cell_len
+                    except Exception:
+                        pass
+                ws.column_dimensions[col_letter].width = min(max_length + 4, 60)
+
+        def style_header_row(ws, row_num=1):
+            for cell in ws[row_num]:
+                cell.font = HEADER_FONT
+                cell.fill = HEADER_FILL
+                cell.alignment = Alignment(horizontal="center", vertical="center")
+                cell.border = THIN_BORDER
+
+        def style_data_rows(ws, start_row=2):
+            for i, row in enumerate(ws.iter_rows(min_row=start_row, max_row=ws.max_row)):
+                fill = ALT_FILL_1 if i % 2 == 0 else ALT_FILL_2
+                for cell in row:
+                    cell.fill = fill
+                    cell.border = THIN_BORDER
+                    cell.alignment = Alignment(vertical="top", wrap_text=True)
+
+        # ─── Sheet "Mensagens" ───────────────────────────────────────
+        ws_msg = wb.active
+        ws_msg.title = "Mensagens"
+        ws_msg.append(["Data/Hora", "Remetente", "Mensagem", "Tipo"])
+        style_header_row(ws_msg)
+
+        for msg in messages:
+            ts = _format_timestamp(msg.timestamp)
+            text = msg.original_text or ""
+            if msg.transcription:
+                text += f"\n[Transcrição] {msg.transcription}"
+            if msg.description:
+                text += f"\n[Descrição] {msg.description}"
+            if msg.ocr_text:
+                text += f"\n[OCR] {msg.ocr_text}"
+            msg_type = _media_type_label(msg.media_type) if msg.media_type != MediaType.TEXT else "Texto"
+            ws_msg.append([ts, msg.sender, text, msg_type])
+
+        style_data_rows(ws_msg)
+        auto_width(ws_msg)
+
+        # ─── Sheet "Estatísticas" ────────────────────────────────────
+        if opts.get("include_statistics", True):
+            ws_stats = wb.create_sheet("Estatísticas")
+            ws_stats.append(["Métrica", "Valor"])
+            style_header_row(ws_stats)
+
+            ws_stats.append(["Nome da Conversa", conversation.conversation_name or "—"])
+            ws_stats.append(["Total de Mensagens", conversation.total_messages])
+            ws_stats.append(["Total de Mídias", conversation.total_media])
+            ws_stats.append(["Data Início", _format_timestamp(conversation.date_start)])
+            ws_stats.append(["Data Fim", _format_timestamp(conversation.date_end)])
+            ws_stats.append(["Participantes", ", ".join(conversation.participants or [])])
+            ws_stats.append(["Sentimento Geral", _sentiment_label(conversation.sentiment_overall)])
+
+            # Contagem por remetente
+            ws_stats.append([])
+            ws_stats.append(["Mensagens por Remetente", ""])
+            sender_counts: Dict[str, int] = {}
+            for msg in messages:
+                sender_counts[msg.sender] = sender_counts.get(msg.sender, 0) + 1
+            for sender, count in sorted(sender_counts.items(), key=lambda x: x[1], reverse=True):
+                ws_stats.append([sender, count])
+
+            # Contagem por tipo
+            ws_stats.append([])
+            ws_stats.append(["Mensagens por Tipo", ""])
+            type_counts: Dict[str, int] = {}
+            for msg in messages:
+                t = msg.media_type.value
+                type_counts[t] = type_counts.get(t, 0) + 1
+            for mtype, count in sorted(type_counts.items(), key=lambda x: x[1], reverse=True):
+                ws_stats.append([mtype, count])
+
+            style_data_rows(ws_stats)
+            auto_width(ws_stats)
+
+        # ─── Sheet "Análise IA" ──────────────────────────────────────
+        if opts.get("include_summary", True):
+            ws_ai = wb.create_sheet("Análise IA")
+            ws_ai.append(["Item", "Conteúdo"])
+            style_header_row(ws_ai)
+
+            if conversation.summary:
+                ws_ai.append(["Resumo", conversation.summary])
+            if conversation.topics:
+                ws_ai.append(["Tópicos", ", ".join(conversation.topics)])
+            if conversation.keywords:
+                ws_ai.append(["Palavras-chave", ", ".join(conversation.keywords)])
+            if conversation.contradictions:
+                for i, c in enumerate(conversation.contradictions[:20], 1):
+                    ws_ai.append([
+                        f"Contradição {i}",
+                        f"{c.get('participant', '?')}: {c.get('description', '')}"
+                    ])
+            if conversation.key_moments:
+                for i, km in enumerate(conversation.key_moments[:20], 1):
+                    ws_ai.append([
+                        f"Momento-chave {i}",
+                        str(km.get("description", km))
+                    ])
+
+            style_data_rows(ws_ai)
+            auto_width(ws_ai)
+
+        buffer = io.BytesIO()
+        wb.save(buffer)
+        buffer.seek(0)
+        content = buffer.getvalue()
+        buffer.close()
+        return content
+
+
+class CSVExporter:
+    """Gera arquivos CSV com encoding UTF-8 BOM"""
+
+    def generate(
+        self,
+        conversation: Conversation,
+        messages: List[Message],
+        options: Dict[str, bool] = None,
+    ) -> bytes:
+        """Gera o CSV e retorna como bytes"""
+        import csv
+
+        buffer = io.StringIO()
+        writer = csv.writer(buffer, quoting=csv.QUOTE_ALL)
+
+        # Cabeçalho
+        writer.writerow(["timestamp", "sender", "message", "type", "is_system"])
+
+        for msg in messages:
+            ts = msg.timestamp.isoformat() if msg.timestamp else ""
+            text = msg.original_text or ""
+            if msg.transcription:
+                text += f" [Transcrição: {msg.transcription}]"
+            if msg.description:
+                text += f" [Descrição: {msg.description}]"
+            if msg.ocr_text:
+                text += f" [OCR: {msg.ocr_text}]"
+            is_system = msg.sender.lower() in ("sistema", "system", "")
+            writer.writerow([
+                ts,
+                msg.sender,
+                text,
+                msg.media_type.value,
+                str(is_system).lower(),
+            ])
+
+        csv_text = buffer.getvalue()
+        buffer.close()
+        # UTF-8 BOM para compatibilidade com Excel
+        return b'\xef\xbb\xbf' + csv_text.encode("utf-8")
+
+
+class HTMLExporter:
+    """Gera HTML interativo standalone com estilo WhatsApp"""
+
+    def generate(
+        self,
+        conversation: Conversation,
+        messages: List[Message],
+        options: Dict[str, bool] = None,
+    ) -> bytes:
+        """Gera o HTML e retorna como bytes"""
+        opts = options or {}
+        conv_name = escape(conversation.conversation_name or "Conversa")
+        participants = conversation.participants or []
+
+        # Construir lista de mensagens HTML
+        msgs_html = []
+        for msg in messages:
+            ts = _format_timestamp(msg.timestamp)
+            sender = escape(msg.sender)
+            text = escape(msg.original_text or "")
+            if msg.media_type != MediaType.TEXT:
+                media_label = escape(_media_type_label(msg.media_type))
+                text = f'<span class="media-badge">{media_label}</span> {text}'
+            if msg.transcription:
+                text += f'<div class="extra">🎤 {escape(msg.transcription)}</div>'
+            if msg.description:
+                text += f'<div class="extra">👁️ {escape(msg.description)}</div>'
+            if msg.ocr_text:
+                text += f'<div class="extra">📄 {escape(msg.ocr_text)}</div>'
+
+            msgs_html.append(
+                f'<div class="msg" data-sender="{sender}">'
+                f'<div class="msg-header"><span class="sender">{sender}</span>'
+                f'<span class="time">{ts}</span></div>'
+                f'<div class="msg-body">{text}</div></div>'
+            )
+
+        participants_options = "".join(
+            f'<option value="{escape(p)}">{escape(p)}</option>' for p in participants
+        )
+
+        summary_section = ""
+        if opts.get("include_summary", True) and conversation.summary:
+            summary_section = f"""
+            <div class="section">
+                <h2>📝 Resumo</h2>
+                <p>{escape(conversation.summary)}</p>
+            </div>"""
+
+        stats_section = ""
+        if opts.get("include_statistics", True):
+            stats_section = f"""
+            <div class="section">
+                <h2>📊 Estatísticas</h2>
+                <table class="stats-table">
+                    <tr><td>Total de Mensagens</td><td>{conversation.total_messages}</td></tr>
+                    <tr><td>Total de Mídias</td><td>{conversation.total_media}</td></tr>
+                    <tr><td>Participantes</td><td>{escape(', '.join(participants))}</td></tr>
+                    <tr><td>Período</td><td>{_format_timestamp(conversation.date_start)} — {_format_timestamp(conversation.date_end)}</td></tr>
+                    <tr><td>Sentimento</td><td>{escape(_sentiment_label(conversation.sentiment_overall))}</td></tr>
+                </table>
+            </div>"""
+
+        html = f"""<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Transcrição - {conv_name}</title>
+<style>
+*{{margin:0;padding:0;box-sizing:border-box}}
+body{{font-family:'Segoe UI',Tahoma,Geneva,Verdana,sans-serif;background:#e5ddd5;color:#1a1a2e}}
+.container{{max-width:800px;margin:0 auto;padding:20px}}
+.header{{background:linear-gradient(135deg,#6C63FF,#4834d4);color:#fff;padding:30px;border-radius:12px;margin-bottom:20px;text-align:center}}
+.header h1{{font-size:1.5em;margin-bottom:5px}}
+.header p{{opacity:.8;font-size:.9em}}
+.controls{{background:#fff;padding:15px;border-radius:8px;margin-bottom:15px;display:flex;gap:10px;flex-wrap:wrap;align-items:center;box-shadow:0 1px 3px rgba(0,0,0,.1)}}
+.controls input,.controls select{{padding:8px 12px;border:1px solid #ddd;border-radius:6px;font-size:14px;flex:1;min-width:150px}}
+.controls input:focus,.controls select:focus{{outline:none;border-color:#6C63FF}}
+.section{{background:#fff;padding:20px;border-radius:8px;margin-bottom:15px;box-shadow:0 1px 3px rgba(0,0,0,.1)}}
+.section h2{{color:#6C63FF;font-size:1.1em;margin-bottom:10px}}
+.stats-table{{width:100%;border-collapse:collapse}}
+.stats-table td{{padding:8px;border-bottom:1px solid #eee}}
+.stats-table td:first-child{{font-weight:bold;width:40%;color:#666}}
+.chat{{background:#fff;border-radius:8px;padding:15px;box-shadow:0 1px 3px rgba(0,0,0,.1)}}
+.msg{{padding:10px 14px;margin:6px 0;border-radius:8px;background:#dcf8c6;position:relative;max-width:85%}}
+.msg:nth-child(even){{background:#fff;border:1px solid #eee}}
+.msg.hidden{{display:none}}
+.msg-header{{display:flex;justify-content:space-between;align-items:center;margin-bottom:4px}}
+.sender{{font-weight:bold;color:#00d4aa;font-size:.85em}}
+.time{{color:#999;font-size:.75em}}
+.msg-body{{font-size:.95em;line-height:1.5;word-break:break-word}}
+.media-badge{{background:#6C63FF;color:#fff;padding:2px 8px;border-radius:4px;font-size:.8em}}
+.extra{{margin-top:6px;padding:6px 10px;background:#f0f0f0;border-radius:6px;font-size:.85em;color:#555}}
+mark{{background:#ffe066;padding:0 2px;border-radius:2px}}
+.footer{{text-align:center;padding:20px;color:#999;font-size:.8em}}
+.match-count{{color:#6C63FF;font-weight:bold;font-size:.9em;padding:8px 0}}
+</style>
+</head>
+<body>
+<div class="container">
+    <div class="header">
+        <h1>💬 {conv_name}</h1>
+        <p>WhatsApp Insight Transcriber — Exportação Interativa</p>
+    </div>
+    <div class="controls">
+        <input type="text" id="searchBox" placeholder="🔍 Buscar mensagens..." oninput="filterMessages()">
+        <select id="senderFilter" onchange="filterMessages()">
+            <option value="">Todos os remetentes</option>
+            {participants_options}
+        </select>
+    </div>
+    <div class="match-count" id="matchCount"></div>
+    {stats_section}
+    {summary_section}
+    <div class="chat" id="chatContainer">
+        {''.join(msgs_html)}
+    </div>
+    <div class="footer">
+        Relatório gerado por WhatsApp Insight Transcriber | {datetime.now().strftime('%d/%m/%Y %H:%M')}
+    </div>
+</div>
+<script>
+function filterMessages(){{
+    const q=document.getElementById('searchBox').value.toLowerCase();
+    const sender=document.getElementById('senderFilter').value;
+    const msgs=document.querySelectorAll('.msg');
+    let count=0;
+    msgs.forEach(m=>{{
+        const mSender=m.getAttribute('data-sender');
+        const body=m.querySelector('.msg-body');
+        const origText=body.getAttribute('data-orig')||body.innerHTML;
+        if(!body.getAttribute('data-orig'))body.setAttribute('data-orig',body.innerHTML);
+        let show=true;
+        if(sender&&mSender!==sender)show=false;
+        if(q&&!origText.toLowerCase().includes(q))show=false;
+        if(show){{
+            m.classList.remove('hidden');
+            count++;
+            if(q){{
+                const re=new RegExp('('+q.replace(/[.*+?^${{}}()|[\\]\\\\]/g,'\\\\$&')+')','gi');
+                body.innerHTML=origText.replace(re,'<mark>$1</mark>');
+            }}else{{
+                body.innerHTML=origText;
+            }}
+        }}else{{
+            m.classList.add('hidden');
+        }}
+    }});
+    document.getElementById('matchCount').textContent=q||sender?count+' mensagem(ns) encontrada(s)':'';
+}}
+</script>
+</body>
+</html>"""
+
+        return html.encode("utf-8")
+
+
+class JSONExporter:
+    """Exportação JSON estruturada com metadados completos"""
+
+    def generate(
+        self,
+        conversation: Conversation,
+        messages: List[Message],
+        options: Dict[str, bool] = None,
+    ) -> bytes:
+        """Gera o JSON e retorna como bytes"""
+        import json
+
+        opts = options or {}
+
+        data: Dict[str, Any] = {
+            "metadata": {
+                "exported_at": datetime.now().isoformat(),
+                "exporter": "WhatsApp Insight Transcriber v1.0",
+                "format_version": "1.0",
+            },
+            "conversation": {
+                "id": conversation.id,
+                "name": conversation.conversation_name,
+                "participants": conversation.participants or [],
+                "total_messages": conversation.total_messages,
+                "total_media": conversation.total_media,
+                "date_start": conversation.date_start.isoformat() if conversation.date_start else None,
+                "date_end": conversation.date_end.isoformat() if conversation.date_end else None,
+            },
+        }
+
+        if opts.get("include_summary", True):
+            data["analysis"] = {
+                "summary": conversation.summary,
+                "topics": conversation.topics,
+                "keywords": conversation.keywords,
+                "sentiment_overall": conversation.sentiment_overall.value if conversation.sentiment_overall else None,
+                "sentiment_score": conversation.sentiment_score,
+                "word_frequency": conversation.word_frequency,
+            }
+
+        if opts.get("include_sentiment_analysis", True):
+            data["contradictions"] = conversation.contradictions or []
+            data["key_moments"] = conversation.key_moments or []
+
+        msg_list = []
+        for msg in messages:
+            m: Dict[str, Any] = {
+                "sequence": msg.sequence_number,
+                "timestamp": msg.timestamp.isoformat() if msg.timestamp else None,
+                "sender": msg.sender,
+                "text": msg.original_text,
+                "type": msg.media_type.value,
+            }
+            if msg.media_filename:
+                m["media_filename"] = msg.media_filename
+            if msg.media_metadata:
+                m["media_metadata"] = msg.media_metadata
+            if msg.transcription:
+                m["transcription"] = msg.transcription
+            if msg.description:
+                m["description"] = msg.description
+            if msg.ocr_text:
+                m["ocr_text"] = msg.ocr_text
+            if opts.get("include_sentiment_analysis", True) and msg.sentiment:
+                m["sentiment"] = msg.sentiment.value
+                m["sentiment_score"] = msg.sentiment_score
+            m["is_key_moment"] = msg.is_key_moment
+            msg_list.append(m)
+
+        data["messages"] = msg_list
+
+        return json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")

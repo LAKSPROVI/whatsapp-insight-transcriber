@@ -14,6 +14,9 @@ import {
   getChatHistory,
   clearChatHistory,
   getAnalytics,
+  searchMessages,
+  getTemplates,
+  analyzeWithTemplate,
 } from "@/lib/api";
 import type {
   ConversationListItem,
@@ -23,6 +26,10 @@ import type {
   ExportOptions,
   ConversationAnalytics,
   ChatHistoryResponse,
+  SearchParams,
+  SearchResponse,
+  TemplateListResponse,
+  TemplateAnalysisResult,
 } from "@/types";
 
 // ─── Query Keys ─────────────────────────────────────────────────────────────
@@ -39,6 +46,9 @@ export const queryKeys = {
     ["chat", conversationId, "history"] as const,
   analytics: (conversationId: string) =>
     ["analytics", conversationId] as const,
+  searchMessages: (params: SearchParams) =>
+    ["search", "messages", params] as const,
+  templates: ["templates"] as const,
 };
 
 // ─── Queries ────────────────────────────────────────────────────────────────
@@ -142,5 +152,38 @@ export function useClearChatHistory() {
         queryKey: queryKeys.chatHistory(conversationId),
       });
     },
+  });
+}
+
+// ─── Search ─────────────────────────────────────────────────────────────────
+
+export function useSearchMessages(params: SearchParams, enabled = true) {
+  return useQuery<SearchResponse>({
+    queryKey: queryKeys.searchMessages(params),
+    queryFn: () => searchMessages(params),
+    enabled: !!params.q && enabled,
+    staleTime: 30_000,
+  });
+}
+
+// ─── Templates ──────────────────────────────────────────────────────────────
+
+export function useTemplates(enabled = true) {
+  return useQuery<TemplateListResponse>({
+    queryKey: queryKeys.templates,
+    queryFn: () => getTemplates(),
+    enabled,
+    staleTime: 5 * 60 * 1000,
+  });
+}
+
+export function useTemplateAnalysis() {
+  return useMutation<
+    TemplateAnalysisResult,
+    Error,
+    { templateId: string; conversationId: string; promptKeys?: string[] }
+  >({
+    mutationFn: ({ templateId, conversationId, promptKeys }) =>
+      analyzeWithTemplate(templateId, conversationId, promptKeys),
   });
 }

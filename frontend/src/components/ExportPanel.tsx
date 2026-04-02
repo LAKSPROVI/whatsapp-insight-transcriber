@@ -45,29 +45,32 @@ export function ExportPanel({ conversationId }: ExportPanelProps) {
   const isExporting = exportMutation.isPending;
 
   return (
-    <div className="glass rounded-2xl p-5 space-y-5">
+    <div className="glass rounded-2xl p-5 space-y-5" role="region" aria-label="Exportar relatório">
       <div className="flex items-center gap-2">
-        <FileDown className="w-5 h-5 text-brand-400" />
+        <FileDown className="w-5 h-5 text-brand-400" aria-hidden="true" />
         <h3 className="font-semibold text-gray-200">Exportar Relatório</h3>
       </div>
 
       {/* Format Selection */}
-      <div className="grid grid-cols-2 gap-3">
+      <fieldset className="grid grid-cols-2 gap-3">
+        <legend className="sr-only">Formato de exportação</legend>
         {(["pdf", "docx"] as const).map((fmt) => (
           <button
             key={fmt}
             onClick={() => setOptions((prev) => ({ ...prev, format: fmt }))}
+            aria-pressed={options.format === fmt}
+            aria-label={`Formato ${fmt.toUpperCase()}`}
             className={cn(
-              "flex items-center gap-3 p-4 rounded-xl border-2 transition-all",
+              "flex items-center gap-3 p-4 rounded-xl border-2 transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500",
               options.format === fmt
                 ? "border-brand-500 bg-brand-500/10"
                 : "border-dark-400/30 bg-dark-700/30 hover:border-dark-300/30"
             )}
           >
             {fmt === "pdf" ? (
-              <FileText className="w-6 h-6 text-red-400" />
+              <FileText className="w-6 h-6 text-red-400" aria-hidden="true" />
             ) : (
-              <FileType2 className="w-6 h-6 text-blue-400" />
+              <FileType2 className="w-6 h-6 text-blue-400" aria-hidden="true" />
             )}
             <div className="text-left">
               <p className="font-semibold text-sm text-white">{fmt.toUpperCase()}</p>
@@ -77,12 +80,12 @@ export function ExportPanel({ conversationId }: ExportPanelProps) {
             </div>
           </button>
         ))}
-      </div>
+      </fieldset>
 
       {/* Options */}
       <div className="space-y-3">
         <div className="flex items-center gap-1.5 text-xs text-gray-400">
-          <Settings2 className="w-3.5 h-3.5" />
+          <Settings2 className="w-3.5 h-3.5" aria-hidden="true" />
           <span>Opções de conteúdo</span>
         </div>
 
@@ -111,13 +114,17 @@ export function ExportPanel({ conversationId }: ExportPanelProps) {
           <button
             key={opt.key}
             onClick={() => toggle(opt.key)}
-            className="w-full flex items-center gap-3 p-3 rounded-xl bg-dark-700/30 hover:bg-dark-600/40 transition-colors"
+            role="switch"
+            aria-checked={!!options[opt.key]}
+            aria-label={`${opt.label}: ${options[opt.key] ? "ativado" : "desativado"}`}
+            className="w-full flex items-center gap-3 p-3 rounded-xl bg-dark-700/30 hover:bg-dark-600/40 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
           >
             <div
               className={cn(
                 "w-9 h-5 rounded-full transition-all relative",
                 options[opt.key] ? "bg-brand-500" : "bg-dark-500"
               )}
+              aria-hidden="true"
             >
               <div
                 className={cn(
@@ -140,8 +147,10 @@ export function ExportPanel({ conversationId }: ExportPanelProps) {
         disabled={isExporting}
         whileHover={{ scale: 1.02 }}
         whileTap={{ scale: 0.98 }}
+        aria-busy={isExporting}
+        aria-label={isExporting ? `Gerando ${options.format.toUpperCase()}...` : `Exportar como ${options.format.toUpperCase()}`}
         className={cn(
-          "w-full flex items-center justify-center gap-2 py-3.5 rounded-xl font-semibold transition-all",
+          "w-full flex items-center justify-center gap-2 py-3.5 rounded-xl font-semibold transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500",
           exported
             ? "bg-accent-400 text-dark-900"
             : "bg-brand-500 hover:bg-brand-400 text-white",

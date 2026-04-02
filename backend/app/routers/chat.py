@@ -1,8 +1,11 @@
 """
-API Endpoints - Chat RAG e Análise
+API Endpoints - Chat RAG e Análise de Conversas.
+
+Permite fazer perguntas sobre conversas transcritas usando Retrieval Augmented Generation (RAG),
+visualizar histórico de chat, limpar histórico e obter analytics detalhados.
 """
 import logging
-from typing import List, AsyncIterator
+from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
@@ -31,8 +34,42 @@ async def send_chat_message(
     current_user: UserInfo = Depends(get_current_user),
 ):
     """
-    Chat RAG: envia uma pergunta sobre a conversa transcrita.
-    Resposta via streaming para UX responsiva.
+    Envia uma pergunta sobre a conversa transcrita usando Chat RAG.
+
+    Utiliza Retrieval Augmented Generation (RAG) para responder perguntas
+    sobre o conteúdo da conversa. A resposta é enviada via Server-Sent Events (SSE)
+    para streaming em tempo real.
+
+    O contexto da conversa (mensagens, transcrições, descrições de mídia) é
+    automaticamente incluído no prompt enviado à IA.
+
+    **Headers necessários:**
+    ```
+    Authorization: Bearer <token>
+    Content-Type: application/json
+    ```
+
+    **Exemplo de request:**
+    ```json
+    {
+        "conversation_id": "abc-123",
+        "message": "Quais foram os principais tópicos discutidos?",
+        "include_context": true
+    }
+    ```
+
+    **Response:** Stream SSE (text/event-stream)
+    ```
+    data: Os principais
+    data:  tópicos discutidos
+    data:  foram...
+    data: [DONE]
+    ```
+
+    **Erros possíveis:**
+    - **404 Not Found**: Conversa não encontrada.
+    - **400 Bad Request**: Conversa ainda não foi completamente processada.
+    - **401 Unauthorized**: Token ausente ou inválido.
     """
     # Verificar se conversa existe e está concluída
     stmt = select(Conversation).where(Conversation.id == conversation_id)
@@ -111,7 +148,43 @@ async def get_chat_history(
     db: AsyncSession = Depends(get_db),
     current_user: UserInfo = Depends(get_current_user),
 ):
-    """Retorna o histórico completo do chat RAG"""
+    """
+    Retorna o histórico completo do chat RAG de uma conversa.
+
+    Lista todas as mensagens trocadas (perguntas do usuário e respostas da IA)
+    ordenadas cronologicamente.
+
+    **Headers necessários:**
+    ```
+    Authorization: Bearer <token>
+    ```
+
+    **Exemplo de response (200):**
+    ```json
+    {
+        "conversation_id": "abc-123",
+        "messages": [
+            {
+                "id": "msg-1",
+                "role": "user",
+                "content": "Quem participou da conversa?",
+                "tokens_used": null,
+                "created_at": "2026-04-01T10:00:00Z"
+            },
+            {
+                "id": "msg-2",
+                "role": "assistant",
+                "content": "A conversa teve 3 participantes: João, Maria e Pedro.",
+                "tokens_used": 150,
+                "created_at": "2026-04-01T10:00:05Z"
+            }
+        ]
+    }
+    ```
+
+    **Erros possíveis:**
+    - **401 Unauthorized**: Token ausente ou inválido.
+    """
     stmt = (
         select(ChatMessage)
         .where(ChatMessage.conversation_id == conversation_id)
@@ -132,7 +205,27 @@ async def clear_chat_history(
     db: AsyncSession = Depends(get_db),
     current_user: UserInfo = Depends(get_current_user),
 ):
-    """Limpa o histórico do chat"""
+    """
+    Limpa todo o histórico do chat RAG de uma conversa.
+
+    Remove todas as mensagens (perguntas e respostas) do histórico do chat.
+    Não afeta os dados da conversa original nem as transcrições.
+
+    **Headers necessários:**
+    ```
+    Authorization: Bearer <token>
+    ```
+
+    **Exemplo de response (200):**
+    ```json
+    {
+        "message": "15 mensagens removidas"
+    }
+    ```
+
+    **Erros possíveis:**
+    - **401 Unauthorized**: Token ausente ou inválido.
+    """
     stmt = select(ChatMessage).where(ChatMessage.conversation_id == conversation_id)
     result = await db.execute(stmt)
     messages = result.scalars().all()
@@ -150,7 +243,53 @@ async def get_analytics(
     db: AsyncSession = Depends(get_db),
     current_user: UserInfo = Depends(get_current_user),
 ):
-    """Retorna análises detalhadas da conversa"""
+    """
+    Retorna análises detalhadas e estatísticas de uma conversa.
+
+    Gera analytics completos incluindo:
+    - Estatísticas por participante (mensagens, mídias, sentimento médio)
+    - Timeline de mensagens (por dia e por hora)
+    - Timeline de sentimento ao longo do tempo
+    - Breakdown de tipos de mídia
+    - Momentos-chave identificados pela IA
+    - Contradições detectadas
+    - Nuvem de palavras (top 100)
+    - Tópicos identificados
+
+    **Headers necessários:**
+    ```
+    Authorization: Bearer <token>
+    ```
+
+    **Exemplo de response (200):**
+    ```json
+    {
+        "conversation_id": "abc-123",
+        "participant_stats": [
+            {
+                "name": "João",
+                "total_messages": 150,
+                "total_media": 10,
+                "avg_sentiment": 0.65,
+                "first_message": "2026-01-01T08:00:00Z",
+                "last_message": "2026-01-15T22:30:00Z"
+            }
+        ],
+        "message_timeline": [{"date": "2026-01-01", "count": 45}],
+        "sentiment_timeline": [{"timestamp": "...", "sender": "João", "score": 0.8}],
+        "media_breakdown": {"text": 500, "audio": 30, "image": 20},
+        "hourly_activity": {"2026-01-01 08:00": 5},
+        "key_moments": [],
+        "contradictions": [],
+        "word_cloud_data": [{"text": "reunião", "value": 42}],
+        "topics": ["trabalho", "projeto"]
+    }
+    ```
+
+    **Erros possíveis:**
+    - **404 Not Found**: Conversa não encontrada.
+    - **401 Unauthorized**: Token ausente ou inválido.
+    """
     stmt = select(Conversation).where(Conversation.id == conversation_id)
     result = await db.execute(stmt)
     conv = result.scalar_one_or_none()

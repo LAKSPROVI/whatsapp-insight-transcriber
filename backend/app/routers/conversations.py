@@ -1,5 +1,9 @@
 """
-API Endpoints - Upload e Gerenciamento de Conversas
+API Endpoints - Upload e Gerenciamento de Conversas.
+
+Permite fazer upload de arquivos ZIP exportados do WhatsApp,
+acompanhar o progresso do processamento, listar conversas,
+obter detalhes, mensagens e deletar conversas.
 """
 import os
 import uuid
@@ -12,6 +16,7 @@ from fastapi import APIRouter, Depends, File, UploadFile, HTTPException, Backgro
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc
+from sqlalchemy.orm import selectinload
 
 from app.config import settings
 from app.database import get_db
@@ -107,8 +112,39 @@ async def upload_conversation(
     current_user: UserInfo = Depends(get_current_user),
 ):
     """
-    Recebe um arquivo .zip de exportação do WhatsApp.
-    Inicia o processamento assíncrono em background.
+    Faz upload de um arquivo .zip de exportação do WhatsApp e inicia processamento.
+
+    Recebe o arquivo ZIP exportado pelo WhatsApp (contendo _chat.txt e mídias),
+    valida a segurança do arquivo, salva no servidor e inicia o processamento
+    assíncrono em background com 20 agentes de IA paralelos.
+
+    **Formato aceito:** Apenas arquivos `.zip` (exportação padrão do WhatsApp).
+
+    **Limites:**
+    - Tamanho máximo do ZIP: configurável (padrão 500MB)
+    - Máximo de arquivos dentro do ZIP: configurável
+    - Proteção contra zip bombs
+
+    **Headers necessários:**
+    ```
+    Authorization: Bearer <token>
+    Content-Type: multipart/form-data
+    ```
+
+    **Exemplo de response (200):**
+    ```json
+    {
+        "session_id": "550e8400-e29b-41d4-a716-446655440000",
+        "conversation_id": "conv-abc123",
+        "message": "Upload realizado com sucesso. Processamento iniciado.",
+        "status": "uploading"
+    }
+    ```
+
+    **Erros possíveis:**
+    - **400 Bad Request**: Arquivo não é .zip, ZIP inválido/corrompido, zip bomb detectada.
+    - **401 Unauthorized**: Token ausente ou inválido.
+    - **413 Request Entity Too Large**: Arquivo excede o tamanho máximo permitido.
     """
     # Validar extensão
     if not file.filename or not file.filename.endswith(".zip"):
@@ -220,7 +256,34 @@ async def get_progress(
     db: AsyncSession = Depends(get_db),
     current_user: UserInfo = Depends(get_current_user),
 ):
-    """Retorna o progresso atual do processamento"""
+    """
+    Retorna o progresso atual do processamento de uma conversa.
+
+    Consulta o status do processamento pelo session_id retornado no upload.
+    Use polling periódico (ex.: a cada 2 segundos) para acompanhar o progresso.
+
+    **Headers necessários:**
+    ```
+    Authorization: Bearer <token>
+    ```
+
+    **Exemplo de response (200):**
+    ```json
+    {
+        "session_id": "550e8400-e29b-41d4-a716-446655440000",
+        "status": "processing",
+        "progress": 0.45,
+        "progress_message": "Transcrevendo áudios (45/100)...",
+        "total_messages": 500
+    }
+    ```
+
+    **Status possíveis:** `uploading`, `parsing`, `processing`, `analyzing`, `completed`, `failed`
+
+    **Erros possíveis:**
+    - **404 Not Found**: Session ID não encontrado.
+    - **401 Unauthorized**: Token ausente ou inválido.
+    """
     # Buscar no banco para dados mais precisos
     stmt = select(Conversation).where(Conversation.session_id == session_id)
     result = await db.execute(stmt)
@@ -254,7 +317,42 @@ async def list_conversations(
     db: AsyncSession = Depends(get_db),
     current_user: UserInfo = Depends(get_current_user),
 ):
-    """Lista todas as conversas processadas"""
+    """
+    Lista todas as conversas processadas com paginação.
+
+    Retorna uma lista resumida das conversas, ordenadas da mais recente para a mais antiga.
+
+    **Query parameters:**
+    - `skip` (int, default=0): Número de itens para pular (offset).
+    - `limit` (int, default=20): Número máximo de itens por página.
+
+    **Headers necessários:**
+    ```
+    Authorization: Bearer <token>
+    ```
+
+    **Exemplo de response (200):**
+    ```json
+    [
+        {
+            "id": "conv-abc123",
+            "session_id": "550e8400-...",
+            "original_filename": "WhatsApp Chat - Grupo.zip",
+            "status": "completed",
+            "progress": 1.0,
+            "conversation_name": "Grupo da Família",
+            "total_messages": 1500,
+            "total_media": 200,
+            "date_start": "2026-01-01T00:00:00Z",
+            "date_end": "2026-03-31T23:59:00Z",
+            "created_at": "2026-04-01T10:00:00Z"
+        }
+    ]
+    ```
+
+    **Erros possíveis:**
+    - **401 Unauthorized**: Token ausente ou inválido.
+    """
     stmt = select(Conversation).order_by(desc(Conversation.created_at)).offset(skip).limit(limit)
     result = await db.execute(stmt)
     conversations = result.scalars().all()
@@ -267,8 +365,45 @@ async def get_conversation(
     db: AsyncSession = Depends(get_db),
     current_user: UserInfo = Depends(get_current_user),
 ):
-    """Retorna detalhes completos de uma conversa"""
-    stmt = select(Conversation).where(Conversation.id == conversation_id)
+    """
+    Retorna detalhes completos de uma conversa específica.
+
+    Inclui todas as informações da conversa: metadados, resumo, sentimento,
+    palavras-chave, tópicos, momentos-chave e contradições.
+
+    **Headers necessários:**
+    ```
+    Authorization: Bearer <token>
+    ```
+
+    **Exemplo de response (200):**
+    ```json
+    {
+        "id": "conv-abc123",
+        "session_id": "550e8400-...",
+        "original_filename": "WhatsApp Chat - Grupo.zip",
+        "status": "completed",
+        "progress": 1.0,
+        "conversation_name": "Grupo da Família",
+        "participants": ["João", "Maria", "Pedro"],
+        "total_messages": 1500,
+        "total_media": 200,
+        "summary": "Conversa sobre planejamento de viagem em família...",
+        "sentiment_overall": "positive",
+        "keywords": ["viagem", "hotel", "praia"],
+        "topics": ["férias", "hospedagem"],
+        "created_at": "2026-04-01T10:00:00Z",
+        "updated_at": "2026-04-01T10:15:00Z"
+    }
+    ```
+
+    **Erros possíveis:**
+    - **404 Not Found**: Conversa não encontrada.
+    - **401 Unauthorized**: Token ausente ou inválido.
+    """
+    stmt = select(Conversation).where(Conversation.id == conversation_id).options(
+        selectinload(Conversation.messages)
+    )
     result = await db.execute(stmt)
     conv = result.scalar_one_or_none()
 
@@ -288,7 +423,54 @@ async def get_messages(
     db: AsyncSession = Depends(get_db),
     current_user: UserInfo = Depends(get_current_user),
 ):
-    """Retorna as mensagens de uma conversa com paginação"""
+    """
+    Retorna as mensagens de uma conversa com filtros e paginação.
+
+    Permite filtrar por tipo de mídia e por remetente. As mensagens são
+    retornadas ordenadas por número de sequência (ordem cronológica).
+
+    **Query parameters:**
+    - `skip` (int, default=0): Offset para paginação.
+    - `limit` (int, default=100): Limite por página (máx 100).
+    - `media_only` (bool, default=false): Se true, retorna apenas mensagens com mídia.
+    - `sender` (str, optional): Filtrar por remetente específico.
+
+    **Headers necessários:**
+    ```
+    Authorization: Bearer <token>
+    ```
+
+    **Exemplo de response (200):**
+    ```json
+    [
+        {
+            "id": "msg-001",
+            "sequence_number": 1,
+            "timestamp": "2026-01-01T08:00:00Z",
+            "sender": "João",
+            "original_text": "Bom dia pessoal!",
+            "media_type": "text",
+            "sentiment": "positive",
+            "sentiment_score": 0.8,
+            "processing_status": "completed"
+        },
+        {
+            "id": "msg-002",
+            "sequence_number": 2,
+            "timestamp": "2026-01-01T08:01:00Z",
+            "sender": "Maria",
+            "original_text": null,
+            "media_type": "audio",
+            "media_filename": "audio-001.opus",
+            "transcription": "Oi João, tudo bem?",
+            "processing_status": "completed"
+        }
+    ]
+    ```
+
+    **Erros possíveis:**
+    - **401 Unauthorized**: Token ausente ou inválido.
+    """
     from app.models import MediaType
     stmt = select(Message).where(Message.conversation_id == conversation_id)
 
@@ -310,7 +492,33 @@ async def delete_conversation(
     db: AsyncSession = Depends(get_db),
     current_user: UserInfo = Depends(get_current_user),
 ):
-    """Remove uma conversa e todos seus dados"""
+    """
+    Remove uma conversa e todos seus dados associados.
+
+    Deleta permanentemente a conversa, incluindo:
+    - Todas as mensagens transcritas
+    - Histórico de chat RAG
+    - Arquivos de mídia extraídos
+    - Arquivo ZIP original
+
+    **⚠️ Esta ação é irreversível.**
+
+    **Headers necessários:**
+    ```
+    Authorization: Bearer <token>
+    ```
+
+    **Exemplo de response (200):**
+    ```json
+    {
+        "message": "Conversa removida com sucesso"
+    }
+    ```
+
+    **Erros possíveis:**
+    - **404 Not Found**: Conversa não encontrada.
+    - **401 Unauthorized**: Token ausente ou inválido.
+    """
     stmt = select(Conversation).where(Conversation.id == conversation_id)
     result = await db.execute(stmt)
     conv = result.scalar_one_or_none()

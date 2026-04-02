@@ -33,6 +33,8 @@ export function ProcessingPanel({ progress, sessionId }: ProcessingPanelProps) {
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
       className="w-full max-w-2xl mx-auto space-y-6"
+      role="region"
+      aria-label="Painel de processamento"
     >
       {/* Header da sessão */}
       <div className="glass rounded-2xl p-6">
@@ -42,8 +44,8 @@ export function ProcessingPanel({ progress, sessionId }: ProcessingPanelProps) {
         </div>
 
         {/* Status principal */}
-        <div className="flex items-center gap-3 mt-4">
-          <div className="relative w-14 h-14 flex items-center justify-center">
+        <div className="flex items-center gap-3 mt-4" aria-live="polite" aria-atomic="true">
+          <div className="relative w-14 h-14 flex items-center justify-center" aria-hidden="true">
             <div
               className={cn(
                 "absolute inset-0 rounded-full border-2 border-transparent",
@@ -73,7 +75,7 @@ export function ProcessingPanel({ progress, sessionId }: ProcessingPanelProps) {
               {percent}%
             </motion.span>
           </div>
-          <div className="h-3 bg-dark-600 rounded-full overflow-hidden">
+          <div className="h-3 bg-dark-600 rounded-full overflow-hidden" role="progressbar" aria-valuenow={percent} aria-valuemin={0} aria-valuemax={100} aria-label={`Progresso: ${percent}%`}>
             <motion.div
               initial={{ width: "0%" }}
               animate={{ width: `${percent}%` }}

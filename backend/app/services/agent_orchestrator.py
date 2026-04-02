@@ -7,7 +7,7 @@ import asyncio
 import logging
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Callable, Awaitable, List, Dict, Any
 from dataclasses import dataclass, field
 from enum import Enum
@@ -58,7 +58,7 @@ class AgentJob:
     message_id: Optional[str] = None
     payload: Dict[str, Any] = field(default_factory=dict)
     priority: int = 5  # 1=crítico, 10=baixo
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     callback: Optional[Callable] = None
     max_retries: int = MAX_RETRIES
 
@@ -102,6 +102,14 @@ class AIAgent:
         """Processa um job com timeout e retry automático."""
         self.is_busy = True
         self.current_job = job
+        try:
+            return await self._process_inner(job)
+        finally:
+            self.is_busy = False
+            self.current_job = None
+
+    async def _process_inner(self, job: AgentJob) -> AgentResult:
+        """Lógica interna de processamento com retry."""
         start_time = time.time()
         timeout = JOB_TIMEOUTS.get(job.job_type.value, DEFAULT_JOB_TIMEOUT)
         retries_used = 0
@@ -291,7 +299,7 @@ class AgentOrchestrator:
         self.claude_service = claude_service
         self.agents: List[AIAgent] = []
         self.job_queue: asyncio.PriorityQueue = asyncio.PriorityQueue()
-        self.results: Dict[str, AgentResult] = {}
+        self.results: Dict[str, Optional[AgentResult]] = {}
         self._running = False
         self._workers: List[asyncio.Task] = []
         self._progress_callbacks: Dict[str, List[Callable]] = {}
@@ -354,7 +362,7 @@ class AgentOrchestrator:
         job_ids: List[str],
         progress_callback: Optional[Callable] = None,
         timeout: float = 600.0
-    ) -> Dict[str, AgentResult]:
+    ) -> Dict[str, Optional[AgentResult]]:
         """
         Aguarda a conclusão de um conjunto de jobs.
         Retorna os resultados quando todos estiverem completos (ou timeout).
@@ -468,7 +476,7 @@ class AgentOrchestrator:
         conversation_id: str,
         media_jobs: List[AgentJob],
         progress_callback: Optional[Callable] = None,
-    ) -> Dict[str, AgentResult]:
+    ) -> Dict[str, Optional[AgentResult]]:
         """
         Processa todos os arquivos de mídia de uma conversa usando
         todos os agentes em paralelo.

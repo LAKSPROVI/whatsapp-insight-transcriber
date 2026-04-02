@@ -52,12 +52,16 @@ export function UploadZone({ onUpload, isUploading = false }: UploadZoneProps) {
   });
 
   return (
-    <div className="w-full max-w-2xl mx-auto">
+    <div className="w-full max-w-2xl mx-auto" role="region" aria-label="Zona de upload de arquivo">
       <motion.div
         {...(getRootProps() as React.ComponentProps<typeof motion.div>)}
         initial={{ opacity: 0, scale: 0.95 }}
         animate={{ opacity: 1, scale: 1 }}
         whileHover={{ scale: isUploading ? 1 : 1.01 }}
+        role="button"
+        tabIndex={0}
+        aria-label={isUploading ? "Enviando arquivo..." : "Clique ou arraste um arquivo ZIP para fazer upload"}
+        aria-busy={isUploading}
         className={cn(
           "upload-zone relative cursor-pointer rounded-2xl p-12 transition-all duration-300",
           "border-2 border-dashed",
@@ -68,7 +72,7 @@ export function UploadZone({ onUpload, isUploading = false }: UploadZoneProps) {
           !isUploading && "hover:border-brand-400 hover:bg-dark-600/50"
         )}
       >
-        <input {...getInputProps()} />
+        <input {...getInputProps()} aria-label="Selecionar arquivo ZIP para upload" />
 
         {/* Conic spin border effect */}
         <div className="absolute inset-0 rounded-2xl overflow-hidden pointer-events-none">
@@ -198,9 +202,11 @@ export function UploadZone({ onUpload, isUploading = false }: UploadZoneProps) {
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0 }}
+              role="alert"
+              aria-live="assertive"
               className="flex items-center gap-2 mt-4 p-3 rounded-lg bg-red-500/10 border border-red-500/30"
             >
-              <AlertCircle className="w-4 h-4 text-red-400 shrink-0" />
+              <AlertCircle className="w-4 h-4 text-red-400 shrink-0" aria-hidden="true" />
               <p className="text-sm text-red-300">{error}</p>
             </motion.div>
           )}

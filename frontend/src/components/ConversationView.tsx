@@ -4,7 +4,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   ArrowLeft, MessageSquare, BarChart2, FileDown,
-  Search, Loader2, RefreshCw, Users, ChevronDown
+  Search, Loader2, RefreshCw, Users, ChevronDown, Clock, Grid3X3
 } from "lucide-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useConversation, useMessages } from "@/lib/queries";
@@ -14,6 +14,9 @@ import { MessageBubble } from "@/components/MessageBubble";
 import { ChatPanel } from "@/components/ChatPanel";
 import { AnalyticsPanel } from "@/components/AnalyticsPanel";
 import { ExportPanel } from "@/components/ExportPanel";
+import { SearchBar } from "@/components/SearchBar";
+import { TimelineView } from "@/components/TimelineView";
+import { ActivityHeatmap } from "@/components/ActivityHeatmap";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { cn, getSentimentEmoji, getSentimentColorHex } from "@/lib/utils";
 
@@ -22,7 +25,7 @@ interface ConversationViewProps {
   onBack: () => void;
 }
 
-type SidePanel = "none" | "chat" | "analytics" | "export";
+type SidePanel = "none" | "chat" | "analytics" | "export" | "timeline" | "heatmap";
 
 export function ConversationView({ conversationId, onBack }: ConversationViewProps) {
   const [allMessages, setAllMessages] = useState<Message[]>([]);
@@ -183,7 +186,7 @@ export function ConversationView({ conversationId, onBack }: ConversationViewPro
   }
 
   return (
-    <div className="flex h-screen overflow-hidden">
+    <div className="flex h-screen overflow-hidden" role="main">
       {/* Main Content */}
       <div
         className={cn(
@@ -192,12 +195,13 @@ export function ConversationView({ conversationId, onBack }: ConversationViewPro
         )}
       >
         {/* Header */}
-        <div className="glass-dark border-b border-brand-500/10 px-4 py-3 flex items-center gap-3 shrink-0">
+        <header className="glass-dark border-b border-brand-500/10 px-4 py-3 flex items-center gap-3 shrink-0">
           <button
             onClick={onBack}
-            className="p-2 rounded-xl hover:bg-dark-600 text-gray-400 hover:text-white transition-colors"
+            aria-label="Voltar para a página inicial"
+            className="p-2 rounded-xl hover:bg-dark-600 text-gray-400 hover:text-white transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
           >
-            <ArrowLeft className="w-5 h-5" />
+            <ArrowLeft className="w-5 h-5" aria-hidden="true" />
           </button>
 
           <div className="flex-1 min-w-0">
@@ -206,17 +210,18 @@ export function ConversationView({ conversationId, onBack }: ConversationViewPro
             </h1>
             <div className="flex items-center gap-3 text-xs text-gray-500 mt-0.5">
               <span className="flex items-center gap-1">
-                <Users className="w-3 h-3" />
+                <Users className="w-3 h-3" aria-hidden="true" />
                 {conversation.participants?.join(", ")}
               </span>
               <span className="flex items-center gap-1">
-                <MessageSquare className="w-3 h-3" />
+                <MessageSquare className="w-3 h-3" aria-hidden="true" />
                 {conversation.total_messages} mensagens
               </span>
               {conversation.sentiment_overall && (
                 <span
                   className="flex items-center gap-1"
                   style={{ color: getSentimentColorHex(conversation.sentiment_overall) }}
+                  aria-label={`Sentimento geral: ${conversation.sentiment_overall}`}
                 >
                   {getSentimentEmoji(conversation.sentiment_overall)}
                 </span>
@@ -225,30 +230,28 @@ export function ConversationView({ conversationId, onBack }: ConversationViewPro
           </div>
 
           {/* Toolbar */}
-          <div className="flex items-center gap-2">
-            {/* Search */}
-            <div className="relative">
-              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-500" />
-              <input
-                type="text"
-                placeholder="Buscar..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-40 bg-dark-700 border border-dark-500/30 rounded-xl pl-8 pr-3 py-2 text-xs text-gray-200 placeholder-gray-600 focus:outline-none focus:border-brand-500/50 transition-all"
-              />
-            </div>
+          <div className="flex items-center gap-2" role="toolbar" aria-label="Ferramentas da conversa">
+            {/* Advanced Search */}
+            <SearchBar
+              conversationId={conversationId}
+              participants={conversation.participants || []}
+            />
 
             {/* Action Buttons */}
             {[
               { id: "analytics" as SidePanel, icon: BarChart2, label: "Análises", color: "accent" },
+              { id: "timeline" as SidePanel, icon: Clock, label: "Timeline", color: "brand" },
+              { id: "heatmap" as SidePanel, icon: Grid3X3, label: "Heatmap", color: "brand" },
               { id: "chat" as SidePanel, icon: MessageSquare, label: "Chat IA", color: "brand" },
               { id: "export" as SidePanel, icon: FileDown, label: "Exportar", color: "brand" },
             ].map(({ id, icon: Icon, label, color }) => (
               <button
                 key={id}
                 onClick={() => setSidePanel(sidePanel === id ? "none" : id)}
+                aria-label={`${sidePanel === id ? "Fechar" : "Abrir"} painel de ${label}`}
+                aria-pressed={sidePanel === id}
                 className={cn(
-                  "flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium transition-all",
+                  "flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500",
                   sidePanel === id
                     ? color === "accent"
                       ? "bg-accent-400/15 border border-accent-400/30 text-accent-300"
@@ -256,12 +259,12 @@ export function ConversationView({ conversationId, onBack }: ConversationViewPro
                     : "bg-dark-700 border border-dark-500/20 text-gray-400 hover:text-gray-200"
                 )}
               >
-                <Icon className="w-3.5 h-3.5" />
+                <Icon className="w-3.5 h-3.5" aria-hidden="true" />
                 <span className="hidden md:inline">{label}</span>
               </button>
             ))}
           </div>
-        </div>
+        </header>
 
         {/* Filter bar */}
         <AnimatePresence>
@@ -270,12 +273,15 @@ export function ConversationView({ conversationId, onBack }: ConversationViewPro
               initial={{ height: 0 }}
               animate={{ height: "auto" }}
               className="px-4 py-2 border-b border-dark-500/20 flex items-center gap-2 overflow-x-auto"
+              role="toolbar"
+              aria-label="Filtrar mensagens por participante"
             >
-              <span className="text-xs text-gray-500 shrink-0">Filtrar por:</span>
+              <span className="text-xs text-gray-500 shrink-0" id="filter-label">Filtrar por:</span>
               <button
                 onClick={() => setFilterSender(null)}
+                aria-pressed={!filterSender}
                 className={cn(
-                  "px-2.5 py-1 rounded-full text-xs transition-colors shrink-0",
+                  "px-2.5 py-1 rounded-full text-xs transition-colors shrink-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500",
                   !filterSender ? "bg-brand-500/20 text-brand-300" : "text-gray-500 hover:text-gray-300"
                 )}
               >
@@ -285,8 +291,9 @@ export function ConversationView({ conversationId, onBack }: ConversationViewPro
                 <button
                   key={p}
                   onClick={() => setFilterSender(filterSender === p ? null : p)}
+                  aria-pressed={filterSender === p}
                   className={cn(
-                    "px-2.5 py-1 rounded-full text-xs transition-colors shrink-0",
+                    "px-2.5 py-1 rounded-full text-xs transition-colors shrink-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500",
                     filterSender === p
                       ? "bg-accent-400/20 text-accent-300"
                       : "text-gray-500 hover:text-gray-300"
@@ -296,7 +303,7 @@ export function ConversationView({ conversationId, onBack }: ConversationViewPro
                 </button>
               ))}
               {searchQuery && (
-                <span className="ml-auto text-xs text-brand-400">
+                <span className="ml-auto text-xs text-brand-400" aria-live="polite">
                   {filteredMessages.length} resultado(s)
                 </span>
               )}
@@ -308,6 +315,8 @@ export function ConversationView({ conversationId, onBack }: ConversationViewPro
         <div
           ref={parentRef}
           className="flex-1 overflow-y-auto px-4 py-4"
+          role="log"
+          aria-label="Mensagens da conversa"
         >
           {filteredMessages.length === 0 ? (
             <div className="flex items-center justify-center h-full">
@@ -418,7 +427,8 @@ export function ConversationView({ conversationId, onBack }: ConversationViewPro
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: 10 }}
               onClick={scrollToBottom}
-              className="absolute bottom-6 right-6 z-20 w-10 h-10 rounded-full bg-brand-500 hover:bg-brand-400 text-white shadow-brand flex items-center justify-center transition-colors"
+              aria-label="Rolar para o final das mensagens"
+              className="absolute bottom-6 right-6 z-20 w-10 h-10 rounded-full bg-brand-500 hover:bg-brand-400 text-white shadow-brand flex items-center justify-center transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
               style={{ position: "fixed", bottom: 24, right: sidePanel !== "none" ? 424 : 24 }}
             >
               <ChevronDown className="w-5 h-5" />
@@ -437,11 +447,31 @@ export function ConversationView({ conversationId, onBack }: ConversationViewPro
             exit={{ x: 400, opacity: 0 }}
             transition={{ type: "spring", damping: 30, stiffness: 300 }}
             className="fixed right-0 top-0 bottom-0 w-[400px] glass-dark border-l border-brand-500/20 z-40 overflow-y-auto"
+            role="complementary"
+            aria-label={
+              sidePanel === "analytics" ? "Painel de análises" :
+              sidePanel === "timeline" ? "Timeline da conversa" :
+              sidePanel === "heatmap" ? "Heatmap de atividade" :
+              "Painel de exportação"
+            }
           >
             <div className="p-4">
               {sidePanel === "analytics" && (
                 <ErrorBoundary>
                   <AnalyticsPanel conversation={conversation} />
+                </ErrorBoundary>
+              )}
+              {sidePanel === "timeline" && (
+                <ErrorBoundary>
+                  <TimelineView
+                    messages={allMessages}
+                    participants={conversation.participants || []}
+                  />
+                </ErrorBoundary>
+              )}
+              {sidePanel === "heatmap" && (
+                <ErrorBoundary>
+                  <ActivityHeatmap messages={allMessages} />
                 </ErrorBoundary>
               )}
               {sidePanel === "export" && (

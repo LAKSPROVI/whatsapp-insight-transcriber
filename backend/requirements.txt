@@ -1,3 +1,4 @@
+# ─── Dependências de Produção ─────────────────────────────────
 anthropic>=0.40.0
 fastapi>=0.115.0
 uvicorn[standard]>=0.32.0
@@ -10,8 +11,13 @@ aiofiles>=24.1.0
 pillow>=11.0.0
 reportlab>=4.2.5
 python-docx>=1.1.2
+openpyxl>=3.1.0
 httpx>=0.28.0
 python-jose[cryptography]>=3.3.0
 passlib[bcrypt]>=1.7.4
 redis[hiredis]>=5.0.0
 structlog>=24.0.0
+
+# ─── Dependências de Desenvolvimento/Teste ─────────────────────
+pytest>=8.0.0
+pytest-asyncio>=0.23.0

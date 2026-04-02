@@ -13,6 +13,8 @@ import {
 import { getAnalytics } from "@/lib/api";
 import type { ConversationAnalytics, Conversation } from "@/types";
 import { cn, getSenderColor, getSentimentColor, getSentimentEmoji } from "@/lib/utils";
+import { ActivityHeatmap } from "@/components/ActivityHeatmap";
+import { TemplateSelector } from "@/components/TemplateSelector";
 
 interface AnalyticsPanelProps {
   conversation: Conversation;
@@ -507,6 +509,14 @@ function InsightsTab({
           <p className="text-gray-400 mt-3">Análises avançadas em andamento...</p>
         </div>
       )}
+
+      {/* Heatmap de Atividade */}
+      {conversation.messages && conversation.messages.length > 0 && (
+        <ActivityHeatmap messages={conversation.messages} />
+      )}
+
+      {/* Template Selector */}
+      <TemplateSelector conversationId={conversation.id} />
     </div>
   );
 }
