@@ -92,7 +92,8 @@ jobs:
               grep -q "^JWT_SECRET_KEY=" .env || echo "JWT_SECRET_KEY=wit-jwt-secret-key-production-2024-min-32-chars" >> .env
               # Garantir que SECRET_KEY existe
               grep -q "^SECRET_KEY=" .env || echo "SECRET_KEY=wit-production-secret-key-change-me-2024-secure" >> .env
-              # Garantir que ADMIN_PASSWORD existe
+              # Forçar ADMIN_PASSWORD seguro
+              sed -i "s/^ADMIN_PASSWORD=.*/ADMIN_PASSWORD=Admin@2024Secure!/" .env
               grep -q "^ADMIN_PASSWORD=" .env || echo "ADMIN_PASSWORD=Admin@2024Secure!" >> .env
               # Garantir que ADMIN_USERNAME existe
               grep -q "^ADMIN_USERNAME=" .env || echo "ADMIN_USERNAME=admin" >> .env
