@@ -113,13 +113,33 @@ jobs:
             echo "🔨 Buildando imagens Docker..."
             docker compose build --no-cache
             
-            echo "🚀 Iniciando containers..."
-            docker compose up -d --remove-orphans
+            echo "🚀 Iniciando backend..."
+            docker compose up -d backend
             
-            echo "⏳ Aguardando health check..."
-            sleep 30
+            echo "⏳ Aguardando backend iniciar..."
+            sleep 15
             
-            # Verificar saúde dos containers
+            echo "📋 Logs do backend:"
+            docker compose logs backend --tail=80
+            
+            echo ""
+            echo "📋 Testando health do backend..."
+            for i in $(seq 1 12); do
+              if curl -sf http://localhost:8020/api/health > /dev/null 2>&1; then
+                echo "✅ Backend healthy na tentativa $i"
+                break
+              fi
+              echo "⏳ Tentativa $i/12 - aguardando..."
+              sleep 10
+            done
+            
+            echo ""
+            echo "🚀 Iniciando frontend..."
+            docker compose up -d frontend
+            sleep 10
+            
+            echo ""
+            echo "📋 Status dos containers:"
             docker compose ps
             
             # Testar backend
