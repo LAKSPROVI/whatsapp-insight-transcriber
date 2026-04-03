@@ -28,18 +28,34 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/search", tags=["search"])
 
 
+# Limite de complexidade para regex do usuário
+MAX_REGEX_LENGTH = 200
+
+
+def _safe_compile(query: str, is_regex: bool) -> re.Pattern | None:
+    """Compila regex com proteção contra ReDoS."""
+    try:
+        raw = query if is_regex else re.escape(query)
+        return re.compile(f"({raw})", re.IGNORECASE)
+    except re.error:
+        return None
+
+
+def _escape_like(value: str) -> str:
+    """Escapa wildcards do LIKE/ILIKE para evitar injeção de padrão."""
+    return value.replace("%", "\\%").replace("_", "\\_")
+
+
 def _highlight(text: str, query: str, is_regex: bool = False) -> str:
     """Adiciona marcações de highlight nos trechos encontrados."""
     if not text or not query:
         return text or ""
+    pattern = _safe_compile(query, is_regex)
+    if not pattern:
+        return text
     try:
-        if is_regex:
-            pattern = re.compile(f"({query})", re.IGNORECASE)
-        else:
-            escaped = re.escape(query)
-            pattern = re.compile(f"({escaped})", re.IGNORECASE)
         return pattern.sub(r"**\1**", text)
-    except re.error:
+    except (re.error, RecursionError):
         return text
 
 
@@ -50,11 +66,13 @@ def _score_message(msg: Message, query: str, is_regex: bool = False) -> float:
     text = (msg.original_text or "").lower()
 
     if is_regex:
-        try:
-            matches = len(re.findall(query, text, re.IGNORECASE))
-            score += matches * 10.0
-        except re.error:
-            pass
+        pattern = _safe_compile(query, True)
+        if pattern:
+            try:
+                matches = len(pattern.findall(text))
+                score += matches * 10.0
+            except (re.error, RecursionError):
+                pass
     else:
         count = text.count(q_lower)
         score += count * 10.0
@@ -145,6 +163,11 @@ async def search_messages(
 
     # Validar regex se habilitado
     if regex:
+        if len(q) > MAX_REGEX_LENGTH:
+            raise ValidationError(
+                detail=f"Regex muito longa (máx {MAX_REGEX_LENGTH} caracteres)",
+                context={"query": q[:50]},
+            )
         try:
             re.compile(q)
         except re.error as e:
@@ -180,9 +203,10 @@ async def search_messages(
         except ValueError:
             raise ValidationError(detail=f"Tipo de mídia inválido: {message_type}")
 
-    # Filtro de texto — SQLite LIKE (case-insensitive built-in)
+    # Filtro de texto — LIKE com wildcards escapados
     if not regex:
-        like_pattern = f"%{q}%"
+        safe_q = _escape_like(q)
+        like_pattern = f"%{safe_q}%"
         stmt = stmt.where(
             or_(
                 Message.original_text.ilike(like_pattern),

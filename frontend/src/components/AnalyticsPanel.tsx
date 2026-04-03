@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import toast from "react-hot-toast";
 import {
   BarChart2, Users, TrendingUp, Tag, AlertTriangle,
   Cloud, Clock, Calendar, ChevronDown
@@ -32,7 +33,10 @@ export function AnalyticsPanel({ conversation }: AnalyticsPanelProps) {
   useEffect(() => {
     getAnalytics(conversation.id)
       .then(setAnalytics)
-      .catch(console.error)
+      .catch((err) => {
+        console.error(err);
+        toast.error("Erro ao carregar análises. Tente novamente.");
+      })
       .finally(() => setLoading(false));
   }, [conversation.id]);
 

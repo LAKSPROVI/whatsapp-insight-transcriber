@@ -5,7 +5,9 @@ import logging
 import os
 import platform
 import shutil
+import time
 import traceback
+from collections import defaultdict
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
@@ -13,11 +15,13 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.config import settings, validate_settings
 from app.database import init_db
 from app.dependencies import get_orchestrator, shutdown_orchestrator
 from app.routers import conversations, chat, export, auth, search, templates
+from app.routers.ws import router as ws_router
 from app.logging_config import setup_logging, RequestLoggingMiddleware, get_logger
 from app.exceptions import (
     AppBaseException,
@@ -33,6 +37,66 @@ from app.exceptions import (
 # ─── Logging estruturado ──────────────────────────────────────────────────────
 setup_logging()
 logger = get_logger(__name__)
+
+
+# ─── Rate Limiter Middleware ──────────────────────────────────────────────────
+# Limites por path: {prefixo: (max_requests, window_seconds)}
+_RATE_LIMITS = {
+    "/api/auth/login": (10, 60),       # 10 login/min
+    "/api/auth/register": (5, 60),     # 5 registros/min
+    "/api/conversations/upload": (10, 60),  # 10 uploads/min
+    "/api/chat/": (30, 60),            # 30 chat/min
+}
+_DEFAULT_LIMIT = (120, 60)  # 120 req/min padrão
+
+
+class RateLimitMiddleware(BaseHTTPMiddleware):
+    def __init__(self, app):
+        super().__init__(app)
+        self._requests: dict[str, list[float]] = defaultdict(list)
+
+    def _get_limit(self, path: str) -> tuple[int, int]:
+        for prefix, limit in _RATE_LIMITS.items():
+            if path.startswith(prefix):
+                return limit
+        return _DEFAULT_LIMIT
+
+    async def dispatch(self, request: Request, call_next):
+        client_ip = request.client.host if request.client else "unknown"
+        path = request.url.path
+        max_requests, window = self._get_limit(path)
+
+        key = f"{client_ip}:{path}"
+        now = time.time()
+
+        # Limpar entradas expiradas
+        self._requests[key] = [
+            t for t in self._requests[key] if now - t < window
+        ]
+
+        if len(self._requests[key]) >= max_requests:
+            logger.warning(f"Rate limit atingido: {client_ip} em {path}")
+            return JSONResponse(
+                status_code=429,
+                content={
+                    "error": "RateLimitError",
+                    "detail": "Limite de requisições excedido. Tente novamente em alguns instantes.",
+                },
+                headers={"Retry-After": str(window)},
+            )
+
+        self._requests[key].append(now)
+
+        # Limpeza periódica (a cada ~1000 requests)
+        if sum(len(v) for v in self._requests.values()) > 10000:
+            self._cleanup(now)
+
+        return await call_next(request)
+
+    def _cleanup(self, now: float):
+        empty_keys = [k for k, v in self._requests.items() if not v or now - v[-1] > 120]
+        for k in empty_keys:
+            del self._requests[k]
 
 
 # ─── Lifespan ─────────────────────────────────────────────────────────────────
@@ -174,6 +238,7 @@ app.add_middleware(
     max_age=600,
 )
 app.add_middleware(GZipMiddleware, minimum_size=1000)
+app.add_middleware(RateLimitMiddleware)
 app.add_middleware(RequestLoggingMiddleware)
 
 # ─── Routers ──────────────────────────────────────────────────────────────────
@@ -183,6 +248,7 @@ app.include_router(chat.router, prefix="/api")
 app.include_router(export.router, prefix="/api")
 app.include_router(search.router, prefix="/api")
 app.include_router(templates.router, prefix="/api")
+app.include_router(ws_router, prefix="/api")
 
 
 # ─── Exception Handlers ──────────────────────────────────────────────────────

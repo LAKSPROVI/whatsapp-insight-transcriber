@@ -4,7 +4,7 @@ Schemas Pydantic para validação e serialização
 import re
 from datetime import datetime
 from typing import Optional, List, Dict, Any
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from app.models import ProcessingStatus, MediaType, SentimentType
 
 
@@ -73,8 +73,7 @@ class MessageResponse(BaseModel):
     is_key_moment: bool = False
     processing_status: ProcessingStatus
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 # ─── Conversation Schemas ─────────────────────────────────────────────────────
@@ -119,8 +118,7 @@ class ConversationResponse(BaseModel):
     completed_at: Optional[datetime] = None
     messages: Optional[List[MessageResponse]] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class ConversationListItem(BaseModel):
@@ -136,8 +134,7 @@ class ConversationListItem(BaseModel):
     date_end: Optional[datetime] = None
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 # ─── Upload Response ──────────────────────────────────────────────────────────
@@ -200,8 +197,7 @@ class ChatResponse(BaseModel):
     tokens_used: Optional[int] = None
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class ChatHistoryResponse(BaseModel):
@@ -322,8 +318,7 @@ class SearchResultItem(BaseModel):
     sentiment: Optional[SentimentType] = None
     score: float = 0.0
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class SearchResponse(BaseModel):
@@ -343,8 +338,7 @@ class SearchConversationItem(BaseModel):
     date_end: Optional[datetime] = None
     match_count: int = 0
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class SearchConversationsResponse(BaseModel):
@@ -363,8 +357,7 @@ class TemplatePrompts(BaseModel):
     sentiment: Optional[str] = None
     recommendations: Optional[str] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class TemplateResponse(BaseModel):

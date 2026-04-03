@@ -300,6 +300,7 @@ class AgentOrchestrator:
         self.agents: List[AIAgent] = []
         self.job_queue: asyncio.PriorityQueue = asyncio.PriorityQueue()
         self.results: Dict[str, Optional[AgentResult]] = {}
+        self._results_timestamps: Dict[str, float] = {}  # TTL para limpeza
         self._running = False
         self._workers: List[asyncio.Task] = []
         self._progress_callbacks: Dict[str, List[Callable]] = {}
@@ -405,6 +406,7 @@ class AgentOrchestrator:
         collected = {jid: self.results.get(jid) for jid in job_ids if jid in self.results}
         for jid in job_ids:
             self.results.pop(jid, None)
+            self._results_timestamps.pop(jid, None)
         return collected
 
     async def _worker_loop(self, agent: AIAgent):
@@ -427,6 +429,10 @@ class AgentOrchestrator:
                 # Processar o job
                 result = await agent.process(job)
                 self.results[job.job_id] = result
+                self._results_timestamps[job.job_id] = time.time()
+
+                # Limpeza periódica de resultados órfãos (>10 min)
+                self._cleanup_stale_results()
 
                 # Executar callback se existir
                 if job.callback:
@@ -444,6 +450,19 @@ class AgentOrchestrator:
                 break
             except Exception as e:
                 logger.error(f"[{agent.agent_id}] Erro no worker loop: {e}", exc_info=True)
+
+    def _cleanup_stale_results(self, max_age: float = 600.0) -> None:
+        """Remove resultados órfãos com mais de max_age segundos."""
+        now = time.time()
+        stale = [
+            jid for jid, ts in self._results_timestamps.items()
+            if now - ts > max_age
+        ]
+        for jid in stale:
+            self.results.pop(jid, None)
+            self._results_timestamps.pop(jid, None)
+        if stale:
+            logger.debug(f"Limpeza: {len(stale)} resultados órfãos removidos")
 
     def get_status(self) -> Dict[str, Any]:
         """Retorna o status atual de todos os agentes"""

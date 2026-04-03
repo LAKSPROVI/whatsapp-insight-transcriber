@@ -22,6 +22,7 @@ export function UploadZone({ onUpload, isUploading = false }: UploadZoneProps) {
 
       if (rejectedFiles.length > 0) {
         const rejection = rejectedFiles[0];
+        setUploadedFile(null);
         if (rejection.errors[0]?.code === "file-too-large") {
           setError("Arquivo muito grande. Máximo: 500MB");
         } else if (rejection.errors[0]?.code === "file-invalid-type") {

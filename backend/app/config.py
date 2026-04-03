@@ -5,73 +5,65 @@ import os
 from pathlib import Path
 from typing import Optional
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import Field
 
 
 class Settings(BaseSettings):
     # ─── API Keys ─────────────────────────────────────────────
-    ANTHROPIC_API_KEY: str = Field(default="", env="ANTHROPIC_API_KEY")
-    ANTHROPIC_BASE_URL: str = Field(
-        default="https://api.gameron.me",  # Gameron API (protocolo Anthropic, sem /v1)
-        env="ANTHROPIC_BASE_URL"
-    )
+    ANTHROPIC_API_KEY: str = ""
+    ANTHROPIC_BASE_URL: str = "https://api.gameron.me"  # Gameron API (protocolo Anthropic, sem /v1)
 
     # ─── Claude Config ────────────────────────────────────────
-    CLAUDE_MODEL: str = Field(default="claude-opus-4-6", env="CLAUDE_MODEL")
-    MAX_TOKENS: int = Field(default=4096, env="MAX_TOKENS")
-    TEMPERATURE: float = Field(default=0.3, env="TEMPERATURE")
+    CLAUDE_MODEL: str = "claude-opus-4-6"
+    MAX_TOKENS: int = 4096
+    TEMPERATURE: float = 0.3
 
     # ─── Agentes ──────────────────────────────────────────────
-    MAX_AGENTS: int = Field(default=20, env="MAX_AGENTS")
-    AGENT_TIMEOUT: int = Field(default=300, env="AGENT_TIMEOUT")  # seconds
+    MAX_AGENTS: int = 20
+    AGENT_TIMEOUT: int = 300  # seconds
 
     # ─── Upload e Armazenamento ───────────────────────────────
-    UPLOAD_DIR: Path = Field(default=Path("uploads"), env="UPLOAD_DIR")
-    MEDIA_DIR: Path = Field(default=Path("media"), env="MEDIA_DIR")
-    MAX_UPLOAD_SIZE: int = Field(default=500 * 1024 * 1024, env="MAX_UPLOAD_SIZE")  # 500MB
-    MAX_UPLOAD_SIZE_MB: int = Field(default=100, env="MAX_UPLOAD_SIZE_MB")
-    MAX_ZIP_FILES: int = Field(default=5000, env="MAX_ZIP_FILES")
-    MAX_ZIP_UNCOMPRESSED_SIZE: int = Field(
-        default=1024 * 1024 * 1024,  # 1GB
-        env="MAX_ZIP_UNCOMPRESSED_SIZE"
-    )
+    UPLOAD_DIR: Path = Path("uploads")
+    MEDIA_DIR: Path = Path("media")
+    MAX_UPLOAD_SIZE: int = 100 * 1024 * 1024  # 100MB
+    MAX_UPLOAD_SIZE_MB: int = 100
+    MAX_ZIP_FILES: int = 5000
+    MAX_ZIP_UNCOMPRESSED_SIZE: int = 1024 * 1024 * 1024  # 1GB
 
     # ─── Database ─────────────────────────────────────────────
-    DATABASE_URL: str = Field(
-        default="sqlite+aiosqlite:///./whatsapp_insight.db",
-        env="DATABASE_URL"
-    )
+    DATABASE_URL: str = "sqlite+aiosqlite:///./whatsapp_insight.db"
 
     # ─── App ──────────────────────────────────────────────────
     APP_NAME: str = "WhatsApp Insight Transcriber"
     APP_VERSION: str = "1.0.0"
-    DEBUG: bool = Field(default=False, env="DEBUG")
-    SECRET_KEY: str = Field(default="", env="SECRET_KEY")
+    DEBUG: bool = False
+    SECRET_KEY: str = ""
 
     # ─── JWT ──────────────────────────────────────────────────
-    JWT_SECRET_KEY: str = Field(default="", env="JWT_SECRET_KEY")
-    JWT_ALGORITHM: str = Field(default="HS256", env="JWT_ALGORITHM")
-    JWT_EXPIRATION_MINUTES: int = Field(default=1440, env="JWT_EXPIRATION_MINUTES")  # 24h
+    JWT_SECRET_KEY: str = ""
+    JWT_ALGORITHM: str = "HS256"
+    JWT_EXPIRATION_MINUTES: int = 1440  # 24h
 
     # ─── Admin ────────────────────────────────────────────────
-    ADMIN_USERNAME: str = Field(default="admin", env="ADMIN_USERNAME")
-    ADMIN_PASSWORD: str = Field(default="", env="ADMIN_PASSWORD")
-    ALLOW_REGISTRATION: bool = Field(default=False, env="ALLOW_REGISTRATION")
+    ADMIN_USERNAME: str = "admin"
+    ADMIN_PASSWORD: str = ""
+    ALLOW_REGISTRATION: bool = False
 
     # ─── CORS ─────────────────────────────────────────────────
-    ALLOWED_ORIGINS: list[str] = Field(
-        default=["http://localhost:3000", "http://127.0.0.1:3000", "http://transcriber.jurislaw.com.br", "https://transcriber.jurislaw.com.br"],
-        env="ALLOWED_ORIGINS"
-    )
+    ALLOWED_ORIGINS: list[str] = [
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://transcriber.jurislaw.com.br",
+        "https://transcriber.jurislaw.com.br",
+    ]
 
     # ─── Redis / Cache ───────────────────────────────────────────
-    REDIS_URL: Optional[str] = Field(default="redis://redis:6379/0", env="REDIS_URL")
-    CACHE_TTL_SECONDS: int = Field(default=86400, env="CACHE_TTL_SECONDS")  # 24h
-    CACHE_ENABLED: bool = Field(default=True, env="CACHE_ENABLED")
+    REDIS_URL: Optional[str] = "redis://redis:6379/0"
+    CACHE_TTL_SECONDS: int = 86400  # 24h
+    CACHE_ENABLED: bool = True
 
     # ─── Logging ─────────────────────────────────────────────────
-    LOG_LEVEL: str = Field(default="INFO", env="LOG_LEVEL")
-    LOG_FORMAT: str = Field(default="json", env="LOG_FORMAT")  # json ou console
+    LOG_LEVEL: str = "INFO"
+    LOG_FORMAT: str = "json"  # json ou console
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", case_sensitive=True)
 
@@ -88,19 +80,19 @@ def validate_settings(s: "Settings") -> None:
             "ANTHROPIC_API_KEY não configurada! "
             "Defina a variável de ambiente ANTHROPIC_API_KEY ou configure no .env"
         )
-    if not s.JWT_SECRET_KEY:
+    if not s.JWT_SECRET_KEY or len(s.JWT_SECRET_KEY) < 32:
         raise ValueError(
-            "JWT_SECRET_KEY não configurada! "
+            "JWT_SECRET_KEY não configurada ou muito curta (mínimo 32 caracteres)! "
             "Defina a variável de ambiente JWT_SECRET_KEY ou configure no .env"
         )
-    if not s.ADMIN_PASSWORD:
+    if not s.ADMIN_PASSWORD or len(s.ADMIN_PASSWORD) < 8:
         raise ValueError(
-            "ADMIN_PASSWORD não configurada! "
+            "ADMIN_PASSWORD não configurada ou muito curta (mínimo 8 caracteres)! "
             "Defina a variável de ambiente ADMIN_PASSWORD ou configure no .env"
         )
-    if not s.SECRET_KEY:
+    if not s.SECRET_KEY or len(s.SECRET_KEY) < 16:
         raise ValueError(
-            "SECRET_KEY não configurada! "
+            "SECRET_KEY não configurada ou muito curta (mínimo 16 caracteres)! "
             "Defina a variável de ambiente SECRET_KEY ou configure no .env"
         )
 

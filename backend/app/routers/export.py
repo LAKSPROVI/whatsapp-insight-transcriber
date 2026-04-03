@@ -192,9 +192,29 @@ async def serve_media(
     - **404 Not Found**: Arquivo de mídia não encontrado.
     - **401 Unauthorized**: Token ausente ou inválido.
     """
-    # Validar filename contra path traversal
-    if ".." in filename or "/" in filename or "\\" in filename:
+    from app.config import settings
+
+    # Validar filename contra path traversal (inclui URL-encoded)
+    if not filename or ".." in filename or "/" in filename or "\\" in filename:
         raise HTTPException(400, "Nome de arquivo inválido")
+
+    # Validar conversation_id contra path traversal
+    if not conversation_id or ".." in conversation_id or "/" in conversation_id or "\\" in conversation_id:
+        raise HTTPException(400, "ID de conversa inválido")
+
+    # Resolver e validar que o caminho fica dentro de MEDIA_DIR
+    media_base = settings.MEDIA_DIR.resolve()
+
+    def _safe_resolve(candidate: Path) -> Optional[Path]:
+        """Resolve o path e garante que está sob MEDIA_DIR."""
+        resolved = candidate.resolve()
+        try:
+            resolved.relative_to(media_base)
+        except ValueError:
+            return None
+        if resolved.is_symlink():
+            return None
+        return resolved if resolved.is_file() else None
 
     # Buscar mensagem com este arquivo
     stmt = (
@@ -209,27 +229,19 @@ async def serve_media(
 
     if not msg or not msg.media_path:
         # Tentar localizar diretamente no diretório de mídia
-        from app.config import settings
         direct_path = settings.MEDIA_DIR / conversation_id / filename
-        if not direct_path.exists():
-            # Busca recursiva
-            media_dir = settings.MEDIA_DIR / conversation_id
-            if media_dir.exists():
-                for f in media_dir.rglob(filename):
-                    if f.is_file():
-                        return FileResponse(
-                            str(f),
-                            filename=filename,
-                        )
+        safe = _safe_resolve(direct_path)
+        if not safe:
             raise HTTPException(404, "Arquivo de mídia não encontrado")
+        return FileResponse(str(safe), filename=filename)
 
-        return FileResponse(str(direct_path), filename=filename)
-
-    if not os.path.exists(msg.media_path):
+    # Validar que media_path resolva para dentro de MEDIA_DIR
+    safe = _safe_resolve(Path(msg.media_path))
+    if not safe:
         raise HTTPException(404, "Arquivo de mídia não encontrado no servidor")
 
     return FileResponse(
-        msg.media_path,
+        str(safe),
         filename=filename,
     )
 

@@ -93,7 +93,7 @@ def _validate_zip_file(content: bytes) -> None:
             # 6. Verificar ratio de compressão (zip bomb check adicional)
             if len(content) > 0 and total_uncompressed > 0:
                 ratio = total_uncompressed / len(content)
-                if ratio > 100:
+                if ratio > 20:
                     raise HTTPException(
                         400,
                         f"Ratio de compressão suspeito ({ratio:.0f}x). Possível zip bomb."
@@ -233,6 +233,15 @@ async def _process_in_background(
                 "message": conv.progress_message,
                 "total_messages": conv.total_messages,
             }
+            # Notificar clientes WebSocket em tempo real
+            from app.routers.ws import notify_progress
+            await notify_progress(
+                session_id=session_id,
+                status=conv.status,
+                progress=conv.progress,
+                message=conv.progress_message or "",
+                total_messages=conv.total_messages,
+            )
 
         try:
             await processor.process_upload(
