@@ -64,6 +64,9 @@ class Settings(BaseSettings):
     # ─── Logging ─────────────────────────────────────────────────
     LOG_LEVEL: str = "INFO"
     LOG_FORMAT: str = "json"  # json ou console
+    LOG_REDACTION_ENABLED: bool = True
+    LOG_TRACING_ENABLED: bool = True
+    LOG_ERROR_ADVISOR: bool = True
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", case_sensitive=True)
 

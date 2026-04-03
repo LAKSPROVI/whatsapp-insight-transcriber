@@ -22,7 +22,8 @@ from app.database import init_db
 from app.dependencies import get_orchestrator, shutdown_orchestrator
 from app.routers import conversations, chat, export, auth, search, templates
 from app.routers.ws import router as ws_router
-from app.logging_config import setup_logging, RequestLoggingMiddleware, get_logger
+from app.logging import setup_logging, get_logger, RequestTracingMiddleware
+from app.logging.error_advisor import get_error_suggestion
 from app.exceptions import (
     AppBaseException,
     ParserError,
@@ -239,7 +240,7 @@ app.add_middleware(
 )
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 app.add_middleware(RateLimitMiddleware)
-app.add_middleware(RequestLoggingMiddleware)
+app.add_middleware(RequestTracingMiddleware)
 
 # ─── Routers ──────────────────────────────────────────────────────────────────
 app.include_router(auth.router, prefix="/api")
@@ -254,17 +255,20 @@ app.include_router(ws_router, prefix="/api")
 # ─── Exception Handlers ──────────────────────────────────────────────────────
 @app.exception_handler(AppBaseException)
 async def app_exception_handler(request: Request, exc: AppBaseException):
-    """Handler para todas as exceções customizadas da aplicação."""
+    """Handler para todas as excecoes customizadas da aplicacao."""
+    error_info = get_error_suggestion(exc=exc)
     logger.warning(
-        f"Exceção de aplicação: {exc.__class__.__name__}",
-        extra={
-            "error_type": exc.__class__.__name__,
-            "detail": exc.detail,
-            "status_code": exc.status_code,
-            "context": exc.context,
-            "path": str(request.url),
-            "method": request.method,
-        },
+        "app_exception",
+        event="error.app_exception.handled",
+        error_type=exc.__class__.__name__,
+        error_message=exc.detail,
+        error_code=error_info.get("error_code"),
+        error_suggestion=error_info.get("suggestion"),
+        error_severity=error_info.get("severity"),
+        http_status_code=exc.status_code,
+        http_url=str(request.url.path),
+        http_method=request.method,
+        context=exc.context,
     )
     return JSONResponse(
         status_code=exc.status_code,
@@ -274,16 +278,19 @@ async def app_exception_handler(request: Request, exc: AppBaseException):
 
 @app.exception_handler(Exception)
 async def generic_exception_handler(request: Request, exc: Exception):
-    """Handler genérico para exceções não tratadas (500)."""
+    """Handler generico para excecoes nao tratadas (500)."""
+    error_info = get_error_suggestion(exc=exc)
     logger.error(
-        f"Exceção não tratada: {exc.__class__.__name__}: {str(exc)}",
-        extra={
-            "error_type": exc.__class__.__name__,
-            "path": str(request.url),
-            "method": request.method,
-            "traceback": traceback.format_exc(),
-        },
-        exc_info=True,
+        "unhandled_exception",
+        event="error.unhandled.critical",
+        error_type=exc.__class__.__name__,
+        error_message=str(exc)[:512],
+        error_code=error_info.get("error_code"),
+        error_suggestion=error_info.get("suggestion"),
+        error_severity="critical",
+        http_url=str(request.url.path),
+        http_method=request.method,
+        stack_trace=traceback.format_exc() if settings.DEBUG else None,
     )
     return JSONResponse(
         status_code=500,

@@ -4,12 +4,14 @@ Fornece cache transparente — funciona sem Redis (fallback gracioso).
 """
 import hashlib
 import json
-import logging
 import time
 import functools
 from typing import Any, Optional, Callable
 
-logger = logging.getLogger(__name__)
+from app.logging import get_logger
+from app.logging.error_advisor import get_error_suggestion
+
+logger = get_logger(__name__)
 
 # Estatísticas em memória (fallback quando Redis indisponível)
 _stats = {"hits": 0, "misses": 0, "errors": 0, "sets": 0}
@@ -98,15 +100,32 @@ async def get_cached_result(key: str) -> Optional[Any]:
         value = await redis.get(key)
         if value is not None:
             _stats["hits"] += 1
-            logger.debug(f"Cache HIT: {key[:50]}...")
+            ttl_remaining = await redis.ttl(key)
+            key_pattern = key.split(":")[0] if ":" in key else key
+            logger.info(
+                "cache_hit",
+                event="cache.redis.hit",
+                key_pattern=key_pattern,
+                ttl=ttl_remaining,
+            )
             return json.loads(value)
         else:
             _stats["misses"] += 1
-            logger.debug(f"Cache MISS: {key[:50]}...")
+            key_pattern = key.split(":")[0] if ":" in key else key
+            logger.info(
+                "cache_miss",
+                event="cache.redis.miss",
+                key_pattern=key_pattern,
+            )
             return None
     except Exception as e:
         _stats["errors"] += 1
-        logger.warning(f"Erro ao ler cache ({key[:50]}...): {e}")
+        logger.error(
+            "cache_error",
+            event="cache.redis.error",
+            operation="get",
+            **get_error_suggestion(exc=e),
+        )
         return None
 
 
@@ -130,7 +149,12 @@ async def set_cached_result(key: str, value: Any, ttl: Optional[int] = None) -> 
         return True
     except Exception as e:
         _stats["errors"] += 1
-        logger.warning(f"Erro ao gravar cache ({key[:50]}...): {e}")
+        logger.error(
+            "cache_error",
+            event="cache.redis.error",
+            operation="set",
+            **get_error_suggestion(exc=e),
+        )
         return False
 
 

@@ -4,7 +4,6 @@ Orquestra todo o fluxo: parse -> DB -> agentes -> análise -> resultado.
 Inclui tratamento de erros granular, retry e status parcial.
 """
 import asyncio
-import logging
 import os
 import shutil
 import uuid
@@ -18,6 +17,8 @@ from sqlalchemy import select
 
 from app.config import settings
 from app.exceptions import ParserError, ProcessingError, APIError
+from app.logging import get_logger, new_span
+from app.logging.error_advisor import get_error_suggestion
 from app.models import (
     Conversation, Message, AgentJob as AgentJobModel,
     ProcessingStatus, MediaType, SentimentType
@@ -27,7 +28,7 @@ from app.services.media_metadata import MediaMetadataExtractor
 from app.services.agent_orchestrator import AgentOrchestrator, AgentJob, JobType
 from app.services.claude_service import ClaudeService
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class ConversationProcessor:
@@ -131,6 +132,14 @@ class ConversationProcessor:
             participants = parser.get_participants()
             conversation_name = self._infer_conversation_name(original_filename, participants)
 
+            logger.info(
+                "conversation_parse_completed",
+                event="conversation.parse.completed",
+                session_id=session_id,
+                messages_count=len(parsed_messages),
+                participants_count=len(participants),
+            )
+
             # ─── 3. Salvar mensagens na DB ────────────────────────────────
             step = "save_messages"
             try:
@@ -162,6 +171,13 @@ class ConversationProcessor:
 
             if media_messages:
                 try:
+                    logger.info(
+                        "conversation_media_processing",
+                        event="conversation.media.processing",
+                        session_id=session_id,
+                        media_count=len(media_messages),
+                        agents_active=settings.MAX_AGENTS,
+                    )
                     await self._update_conversation(conversation, {
                         "progress": 0.20,
                         "progress_message": f"Iniciando {len(media_messages)} processamentos de mídia com {settings.MAX_AGENTS} agentes paralelos...",
@@ -186,6 +202,12 @@ class ConversationProcessor:
             # ─── 5. Análises avançadas ────────────────────────────────────
             step = "advanced_analysis"
             try:
+                logger.info(
+                    "conversation_analysis_started",
+                    event="conversation.analysis.started",
+                    session_id=session_id,
+                    conversation_id=conversation.id,
+                )
                 await self._update_conversation(conversation, {
                     "progress": 0.80,
                     "progress_message": "Gerando análises avançadas...",
@@ -194,11 +216,20 @@ class ConversationProcessor:
                     await self._notify_progress(progress_callback, conversation)
 
                 await self._run_advanced_analysis(conversation, parsed_messages)
+                logger.info(
+                    "conversation_analysis_completed",
+                    event="conversation.analysis.completed",
+                    session_id=session_id,
+                    conversation_id=conversation.id,
+                )
             except Exception as e:
                 logger.error(
-                    f"Falha nas análises avançadas (continuando): {e}",
-                    extra={"session_id": session_id, "step": step},
-                    exc_info=True,
+                    "conversation_analysis_failed",
+                    event="conversation.analysis.failed",
+                    session_id=session_id,
+                    step=step,
+                    error_type=type(e).__name__,
+                    **get_error_suggestion(exc=e),
                 )
                 failed_steps.append(step)
                 # Continua — análises avançadas são opcionais
@@ -226,13 +257,24 @@ class ConversationProcessor:
                 await self._notify_progress(progress_callback, conversation)
 
             logger.info(
-                f"Conversa {conversation.id} processada com sucesso!",
-                extra={"session_id": session_id, "failed_steps": failed_steps or None},
+                "conversation_upload_completed",
+                event="conversation.upload.completed",
+                session_id=session_id,
+                conversation_id=conversation.id,
+                failed_steps=failed_steps or None,
             )
             return conversation
 
         except (ParserError, ProcessingError, APIError) as e:
             # Exceções de negócio — repassar com status atualizado
+            logger.error(
+                "conversation_upload_failed",
+                event="conversation.upload.failed",
+                session_id=session_id,
+                step=step,
+                error_type=type(e).__name__,
+                **get_error_suggestion(exc=e),
+            )
             if conversation:
                 await self._update_conversation(conversation, {
                     "status": ProcessingStatus.FAILED,
@@ -242,9 +284,12 @@ class ConversationProcessor:
 
         except Exception as e:
             logger.error(
-                f"Erro inesperado ao processar conversa",
-                extra={"session_id": session_id, "step": step},
-                exc_info=True,
+                "conversation_upload_failed",
+                event="conversation.upload.failed",
+                session_id=session_id,
+                step=step,
+                error_type=type(e).__name__,
+                **get_error_suggestion(exc=e),
             )
             if conversation:
                 await self._update_conversation(conversation, {

@@ -4,7 +4,6 @@ Responsável por todas as chamadas de IA: transcrição, visão, RAG, análise.
 Inclui retry com exponential backoff, rate limiting, timeout configurável.
 """
 import base64
-import logging
 import os
 import json
 import asyncio
@@ -19,9 +18,11 @@ from typing import Optional, List, Dict, Any, AsyncIterator
 import anthropic
 from app.config import settings
 from app.exceptions import APIError, RateLimitError
+from app.logging import get_logger, new_span
+from app.logging.error_advisor import get_error_suggestion
 from app.services.cache_service import cached, make_cache_key, get_cached_result, set_cached_result
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # ─── Timeouts por tipo de operação (segundos) ────────────────────────────────
 OPERATION_TIMEOUTS: Dict[str, float] = {
@@ -82,10 +83,29 @@ class ClaudeService:
             for attempt in range(MAX_RETRIES):
                 try:
                     self._total_calls += 1
-                    result = await asyncio.wait_for(
-                        self.client.messages.create(**kwargs),
-                        timeout=timeout,
-                    )
+                    start_time = time.time()
+                    with new_span("claude.api_call"):
+                        logger.info(
+                            "claude_api_call_started",
+                            event="ai.api_call.started",
+                            ai_model=kwargs.get("model", self.model),
+                            operation=operation,
+                            attempt=attempt + 1,
+                        )
+                        result = await asyncio.wait_for(
+                            self.client.messages.create(**kwargs),
+                            timeout=timeout,
+                        )
+                        latency_ms = round((time.time() - start_time) * 1000, 2)
+                        logger.info(
+                            "claude_api_call_completed",
+                            event="ai.api_call.completed",
+                            ai_model=kwargs.get("model", self.model),
+                            ai_tokens_input=result.usage.input_tokens,
+                            ai_tokens_output=result.usage.output_tokens,
+                            ai_latency_ms=latency_ms,
+                            operation=operation,
+                        )
                     return result
 
                 except asyncio.TimeoutError:
@@ -106,15 +126,15 @@ class ClaudeService:
                         wait_time = max(wait_time, float(retry_after))
 
                     last_error = f"Rate limit (429): {str(e)}"
-                    logger.warning(
-                        f"Rate limit atingido (tentativa {attempt + 1}/{MAX_RETRIES}). "
-                        f"Aguardando {wait_time:.1f}s antes de retry...",
-                        extra={
-                            "operation": operation,
-                            "attempt": attempt + 1,
-                            "wait_time": wait_time,
-                            "rate_limit_total": self._rate_limit_hits,
-                        },
+                    logger.error(
+                        "claude_api_call_failed",
+                        event="ai.api_call.failed",
+                        error_type="RateLimitError",
+                        operation=operation,
+                        attempt=attempt + 1,
+                        wait_time=wait_time,
+                        rate_limit_total=self._rate_limit_hits,
+                        **get_error_suggestion(exc=e),
                     )
 
                     if attempt < MAX_RETRIES - 1:
@@ -136,13 +156,33 @@ class ClaudeService:
                     status = getattr(e, "status_code", 0)
                     last_error = f"API status {status}: {str(e)}"
 
+                    # Erros permanentes (ex: modelo não suporta imagem) — não fazer retry
+                    error_msg = str(e).lower()
+                    if any(phrase in error_msg for phrase in [
+                        "does not support image", "image input", "cannot read image",
+                        "image_not_supported",
+                    ]):
+                        self._total_errors += 1
+                        logger.error(
+                            "claude_api_call_failed",
+                            event="ai.api_call.failed",
+                            error_type="APIStatusError",
+                            operation=operation,
+                            status_code=status,
+                            **get_error_suggestion(exc=e),
+                        )
+                        raise
+
                     # Erros 5xx são transientes
                     if status >= 500 and attempt < MAX_RETRIES - 1:
                         wait_time = BACKOFF_BASE * (BACKOFF_MULTIPLIER ** attempt)
                         logger.warning(
-                            f"Erro de servidor API {status} (tentativa {attempt + 1}/{MAX_RETRIES}). "
-                            f"Retry em {wait_time:.1f}s...",
-                            extra={"operation": operation, "status": status, "attempt": attempt + 1},
+                            "claude_api_server_error",
+                            event="ai.api_call.failed",
+                            error_type="APIStatusError",
+                            operation=operation,
+                            status_code=status,
+                            attempt=attempt + 1,
                         )
                         await asyncio.sleep(wait_time)
                         self._total_retries += 1
@@ -171,10 +211,24 @@ class ClaudeService:
                     last_error = str(e)
                     self._total_errors += 1
                     logger.error(
-                        f"Erro inesperado na chamada API: {e}",
-                        extra={"operation": operation, "attempt": attempt + 1},
-                        exc_info=True,
+                        "claude_api_call_failed",
+                        event="ai.api_call.failed",
+                        error_type=type(e).__name__,
+                        operation=operation,
+                        attempt=attempt + 1,
+                        **get_error_suggestion(exc=e),
                     )
+
+                    # Erros permanentes de imagem — não fazer retry
+                    error_lower = str(e).lower()
+                    if any(phrase in error_lower for phrase in [
+                        "does not support image", "cannot read image",
+                        "image_not_supported", "not support image",
+                    ]):
+                        raise APIError(
+                            detail=f"Modelo não suporta input de imagem: {str(e)}",
+                            context={"operation": operation, "attempts": attempt + 1},
+                        )
 
                     if attempt < MAX_RETRIES - 1:
                         wait_time = BACKOFF_BASE * (BACKOFF_MULTIPLIER ** attempt)
@@ -340,21 +394,65 @@ Responda apenas com a transcrição corrigida."""
             logger.warning(f"Erro no Whisper: {e}")
             return None
 
+    # ─── Frases que indicam modelo sem suporte a imagem ────────────────────────
+    IMAGE_NOT_SUPPORTED_PHRASES = [
+        "does not support image",
+        "image input",
+        "not support image",
+        "cannot read image",
+        "image_not_supported",
+        "not supported for this model",
+        "model does not support",
+        "inform the user",
+    ]
+
     async def describe_image(
         self,
         file_path: str,
         media_metadata: Optional[Dict] = None
     ) -> Dict[str, Any]:
         """
-        Analisa uma imagem usando Claude Vision:
-        - Descreve o conteúdo
-        - Realiza OCR do texto presente
-        - Analisa sentimento visual
+        Analisa uma imagem usando Claude Vision.
+        Se o modelo/proxy não suportar vision, usa fallback baseado em metadados.
+        Trata 3 cenários de falha:
+        1. Exceção HTTP (400/4xx) — proxy rejeita a request
+        2. Exceção genérica re-empacotada como APIError pelo retry
+        3. HTTP 200 com mensagem de erro no content (proxy aceita mas retorna erro em texto)
         """
         path = Path(file_path)
         if not path.exists():
             raise FileNotFoundError(f"Imagem não encontrada: {file_path}")
 
+        # Tentar análise via vision
+        try:
+            result = await self._describe_image_vision(path, file_path)
+        except Exception as e:
+            # Cenários 1 e 2: qualquer exceção que contenha a mensagem de erro
+            if self._is_image_not_supported_error(str(e)):
+                logger.warning(
+                    f"Modelo não suporta input de imagem (exceção), usando fallback: {e}"
+                )
+                return self._describe_image_fallback(path, media_metadata)
+            raise
+
+        # Cenário 3: HTTP 200 com erro no texto de resposta
+        description = result.get("description", "")
+        if self._is_image_not_supported_error(description):
+            logger.warning(
+                f"Modelo retornou erro de imagem no content (HTTP 200), usando fallback. "
+                f"Resposta: {description[:200]}"
+            )
+            return self._describe_image_fallback(path, media_metadata)
+
+        return result
+
+    def _is_image_not_supported_error(self, text: str) -> bool:
+        """Verifica se o texto contém indicações de que o modelo não suporta imagem."""
+        text_lower = text.lower()
+        return any(phrase in text_lower for phrase in self.IMAGE_NOT_SUPPORTED_PHRASES)
+
+    async def _describe_image_vision(self, path: Path, file_path: str) -> Dict[str, Any]:
+        """Tenta descrever imagem usando Claude Vision (base64)."""
         with open(file_path, "rb") as f:
             image_data = base64.standard_b64encode(f.read()).decode("utf-8")
 
@@ -419,6 +517,36 @@ Responda APENAS com o JSON, sem texto adicional."""
             "tokens_used": message.usage.input_tokens + message.usage.output_tokens,
         }
 
+    def _describe_image_fallback(self, path: Path, media_metadata: Optional[Dict] = None) -> Dict[str, Any]:
+        """Fallback: gera descrição baseada em metadados quando vision não está disponível."""
+        ext = path.suffix.lower().lstrip(".")
+        filename = path.name
+
+        metadata_parts = []
+        if media_metadata:
+            if media_metadata.get("resolution"):
+                metadata_parts.append(f"Resolução: {media_metadata['resolution']}")
+            if media_metadata.get("file_size_formatted"):
+                metadata_parts.append(f"Tamanho: {media_metadata['file_size_formatted']}")
+            if media_metadata.get("format"):
+                metadata_parts.append(f"Formato: {media_metadata['format']}")
+
+        metadata_str = "; ".join(metadata_parts) if metadata_parts else "Metadados não disponíveis"
+
+        description = (
+            f"[Imagem recebida - análise visual indisponível (modelo sem suporte a vision). "
+            f"Arquivo: {filename}. {metadata_str}]"
+        )
+
+        return {
+            "description": description,
+            "ocr_text": None,
+            "image_type": ext if ext in ("jpg", "jpeg", "png", "gif", "webp") else "imagem",
+            "sentiment": "neutro",
+            "contains_sensitive_content": False,
+            "tokens_used": 0,
+        }
+
     async def transcribe_video(
         self,
         file_path: str,
@@ -438,10 +566,13 @@ Responda APENAS com o JSON, sem texto adicional."""
         try:
             for frame_path in frames:
                 try:
-                    frame_result = await self.describe_image(frame_path)
+                    frame_result = await self.describe_image(
+                        frame_path,
+                        media_metadata=media_metadata,
+                    )
                     frame_results.append(frame_result.get("description", ""))
                 except Exception as e:
-                    logger.warning(f"Erro ao processar frame: {e}")
+                    logger.warning(f"Erro ao processar frame (continuando): {e}")
                 finally:
                     try:
                         os.remove(frame_path)

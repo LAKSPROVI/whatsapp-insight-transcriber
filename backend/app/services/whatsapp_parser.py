@@ -7,15 +7,15 @@ import re
 import zipfile
 import os
 import shutil
-import logging
 from datetime import datetime
 from pathlib import Path
 from typing import List, Tuple, Optional, Dict
 from dataclasses import dataclass, field
 
 from app.exceptions import ParserError
+from app.logging import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # ─── Padrões de Data/Hora WhatsApp ───────────────────────────────────────────
 # Suporta Android, iOS e Web com formatos internacionais
@@ -240,8 +240,13 @@ class WhatsAppParser:
                     context={"zip_path": zip_path, "extracted_files": len(list(extract_path.rglob("*")))},
                 )
 
-            logger.info(f"Arquivo de chat encontrado: {chat_file}")
-            logger.info(f"Arquivos de mídia encontrados: {len(media_files)}")
+            logger.info(
+                "zip_extracted",
+                event="parser.zip.extracted",
+                files_count=len(list(extract_path.rglob("*"))),
+                media_count=len(media_files),
+                chat_file=chat_file,
+            )
 
             return chat_file, media_files
 
@@ -299,10 +304,14 @@ class WhatsAppParser:
                 messages.append(parsed)
 
         self.messages = messages
+        date_start, date_end = self.get_date_range()
         logger.info(
-            f"Total de mensagens parseadas: {len(messages)}, "
-            f"participantes: {len(self.participants)}, "
-            f"formato de data: {self._date_format or 'auto'}"
+            "chat_parsed",
+            event="parser.chat.parsed",
+            messages_count=len(messages),
+            participants_count=len(self.participants),
+            date_range=f"{date_start} - {date_end}" if date_start else None,
+            date_format=self._date_format or "auto",
         )
         return messages
 

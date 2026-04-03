@@ -5,15 +5,16 @@ Gera relatórios profissionais formatados
 import io
 import os
 import re
-import logging
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Dict, Any
 from xml.sax.saxutils import escape
 
 from app.models import Conversation, Message, MediaType, SentimentType
+from app.logging import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 def sanitize_for_pdf(text: str) -> str:
@@ -63,6 +64,12 @@ class PDFExporter:
         options: Dict[str, bool] = None,
     ) -> bytes:
         """Gera o PDF e retorna como bytes"""
+        start_time = time.time()
+        logger.info(
+            "export_pdf_started",
+            event="export.pdf.started",
+            conversation_id=conversation.id,
+        )
         try:
             from reportlab.lib.pagesizes import A4
             from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -317,6 +324,15 @@ class PDFExporter:
         buffer.seek(0)
         content = buffer.getvalue()
         buffer.close()
+        duration_ms = round((time.time() - start_time) * 1000, 2)
+        logger.info(
+            "export_pdf_completed",
+            event="export.pdf.completed",
+            conversation_id=conversation.id,
+            file_size_bytes=len(content),
+            pages=len(messages),
+            duration_ms=duration_ms,
+        )
         return content
 
 
@@ -330,6 +346,12 @@ class DOCXExporter:
         options: Dict[str, bool] = None,
     ) -> bytes:
         """Gera o DOCX e retorna como bytes"""
+        start_time = time.time()
+        logger.info(
+            "export_docx_started",
+            event="export.docx.started",
+            conversation_id=conversation.id,
+        )
         try:
             from docx import Document
             from docx.shared import Pt, Cm, RGBColor
@@ -498,6 +520,14 @@ class DOCXExporter:
         buffer.seek(0)
         content = buffer.getvalue()
         buffer.close()
+        duration_ms = round((time.time() - start_time) * 1000, 2)
+        logger.info(
+            "export_docx_completed",
+            event="export.docx.completed",
+            conversation_id=conversation.id,
+            file_size_bytes=len(content),
+            duration_ms=duration_ms,
+        )
         return content
 
 
@@ -511,6 +541,12 @@ class ExcelExporter:
         options: Dict[str, bool] = None,
     ) -> bytes:
         """Gera o XLSX e retorna como bytes"""
+        start_time = time.time()
+        logger.info(
+            "export_xlsx_started",
+            event="export.xlsx.started",
+            conversation_id=conversation.id,
+        )
         try:
             from openpyxl import Workbook
             from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
@@ -652,6 +688,14 @@ class ExcelExporter:
         buffer.seek(0)
         content = buffer.getvalue()
         buffer.close()
+        duration_ms = round((time.time() - start_time) * 1000, 2)
+        logger.info(
+            "export_xlsx_completed",
+            event="export.xlsx.completed",
+            conversation_id=conversation.id,
+            file_size_bytes=len(content),
+            duration_ms=duration_ms,
+        )
         return content
 
 

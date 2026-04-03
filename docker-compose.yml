@@ -57,11 +57,19 @@ services:
       - wit_data:/app/data
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    logging:
+      driver: fluentd
+      options:
+        fluentd-address: localhost:24224
+        fluentd-async: "true"
+        tag: docker.wit_backend
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+      fluentbit:
+        condition: service_started
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
       interval: 15s
@@ -93,8 +101,72 @@ services:
       retries: 5
       start_period: 30s
 
+  # ─── Fluent Bit ──────────────────────────────────────────────────
+  fluentbit:
+    image: fluent/fluent-bit:3.0
+    container_name: wit_fluentbit
+    restart: unless-stopped
+    ports:
+      - "24224:24224"
+      - "24224:24224/udp"
+      - "2020:2020"
+    volumes:
+      - ./logging/fluent-bit.conf:/fluent-bit/etc/fluent-bit.conf:ro
+      - ./logging/parsers.conf:/fluent-bit/etc/parsers.conf:ro
+      - ./logging/redact.lua:/fluent-bit/etc/redact.lua:ro
+      - fluentbit_buffer:/fluent-bit/buffer
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/lib/docker/containers:/var/log/containers:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:2020/api/v1/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ─── Elasticsearch ───────────────────────────────────────────────
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.13.0
+    container_name: wit_elasticsearch
+    restart: unless-stopped
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=true
+      - ELASTIC_PASSWORD=${ELASTIC_PASSWORD:-changeme}
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+      - xpack.security.http.ssl.enabled=false
+    volumes:
+      - wit_esdata:/usr/share/elasticsearch/data
+    ports:
+      - "9200:9200"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s -u elastic:${ELASTIC_PASSWORD:-changeme} http://localhost:9200/_cluster/health | grep -q '\"status\"'"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # ─── Kibana ──────────────────────────────────────────────────────
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.13.0
+    container_name: wit_kibana
+    restart: unless-stopped
+    ports:
+      - "5601:5601"
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+      - ELASTICSEARCH_USERNAME=kibana_system
+      - ELASTICSEARCH_PASSWORD=${ELASTIC_PASSWORD:-changeme}
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+
 volumes:
   wit_data:
     driver: local
   wit_pgdata:
+    driver: local
+  wit_esdata:
+    driver: local
+  fluentbit_buffer:
     driver: local

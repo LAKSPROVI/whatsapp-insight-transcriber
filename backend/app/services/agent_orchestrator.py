@@ -4,7 +4,6 @@ Sistema de Agentes de IA - Orquestrador e Workers
 Inclui timeout configurável, retry com exponential backoff e log detalhado.
 """
 import asyncio
-import logging
 import time
 import uuid
 from datetime import datetime, timezone
@@ -13,8 +12,10 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 from app.exceptions import ProcessingError, APIError
+from app.logging import get_logger, new_span
+from app.logging.error_advisor import get_error_suggestion
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # ─── Timeouts configuráveis por tipo de job (segundos) ────────────────────────
 JOB_TIMEOUTS: Dict[str, float] = {
@@ -103,7 +104,8 @@ class AIAgent:
         self.is_busy = True
         self.current_job = job
         try:
-            return await self._process_inner(job)
+            with new_span(f"agent.process.{job.job_type.value}"):
+                return await self._process_inner(job)
         finally:
             self.is_busy = False
             self.current_job = None
@@ -115,13 +117,12 @@ class AIAgent:
         retries_used = 0
 
         logger.info(
-            f"[{self.agent_id}] Iniciando job {job.job_id[:8]}... ({job.job_type.value})",
-            extra={
-                "agent_id": self.agent_id,
-                "job_id": job.job_id,
-                "job_type": job.job_type.value,
-                "timeout": timeout,
-            },
+            "agent_job_started",
+            event="agent.job.started",
+            agent_id=self.agent_id,
+            job_id=job.job_id,
+            job_type=job.job_type.value,
+            timeout=timeout,
         )
 
         last_error = None
@@ -139,15 +140,14 @@ class AIAgent:
                 self.total_processing_time += processing_time
 
                 logger.info(
-                    f"[{self.agent_id}] Job {job.job_id[:8]}... concluído em {processing_time:.2f}s"
-                    + (f" (após {retries_used} retry(s))" if retries_used else ""),
-                    extra={
-                        "agent_id": self.agent_id,
-                        "job_id": job.job_id,
-                        "duration": round(processing_time, 2),
-                        "retries": retries_used,
-                        "status": "success",
-                    },
+                    "agent_job_completed",
+                    event="agent.job.completed",
+                    agent_id=self.agent_id,
+                    job_id=job.job_id,
+                    job_type=job.job_type.value,
+                    duration_ms=round(processing_time * 1000, 2),
+                    retries=retries_used,
+                    tokens_used=result.get("tokens_used", 0) if result else 0,
                 )
 
                 return AgentResult(
@@ -202,16 +202,15 @@ class AIAgent:
         self.errors += 1
 
         logger.error(
-            f"[{self.agent_id}] Job {job.job_id[:8]}... falhou após {retries_used + 1} tentativa(s): {last_error}",
-            extra={
-                "agent_id": self.agent_id,
-                "job_id": job.job_id,
-                "job_type": job.job_type.value,
-                "duration": round(processing_time, 2),
-                "retries": retries_used,
-                "status": "failed",
-                "error": last_error,
-            },
+            "agent_job_failed",
+            event="agent.job.failed",
+            agent_id=self.agent_id,
+            job_id=job.job_id,
+            job_type=job.job_type.value,
+            duration_ms=round(processing_time * 1000, 2),
+            retries=retries_used,
+            error=last_error,
+            **get_error_suggestion(exc=Exception(last_error) if last_error else Exception("unknown")),
         )
 
         return AgentResult(
