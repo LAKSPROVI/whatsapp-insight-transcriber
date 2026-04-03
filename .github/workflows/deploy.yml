@@ -69,7 +69,7 @@ jobs:
             # Criar .env se não existir
             if [ ! -f .env ]; then
               echo "ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}" > .env
-              echo "ANTHROPIC_BASE_URL=${{ secrets.ANTHROPIC_BASE_URL || 'http://localhost:1337' }}" >> .env
+              echo "ANTHROPIC_BASE_URL=${{ secrets.ANTHROPIC_BASE_URL || 'https://api.gameron.me' }}" >> .env
               echo "CLAUDE_MODEL=claude-opus-4-6" >> .env
               echo "MAX_AGENTS=20" >> .env
               echo "DATABASE_URL=sqlite+aiosqlite:///./data/whatsapp_insight.db" >> .env
@@ -86,8 +86,10 @@ jobs:
               echo "ALLOWED_ORIGINS=[\"http://${{ env.HETZNER_HOST }}\",\"http://${{ env.HETZNER_HOST }}:3020\",\"https://transcriber.jurislaw.com.br\"]" >> .env
               echo "✅ .env criado com todas as variáveis"
             else
-              # Atualizar API key
+              # Atualizar API key e base URL
               sed -i "s/^ANTHROPIC_API_KEY=.*/ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}/" .env
+              sed -i "s|^ANTHROPIC_BASE_URL=.*|ANTHROPIC_BASE_URL=https://api.gameron.me|" .env
+              grep -q "^ANTHROPIC_BASE_URL=" .env || echo "ANTHROPIC_BASE_URL=https://api.gameron.me" >> .env
               # Garantir que JWT_SECRET_KEY existe
               grep -q "^JWT_SECRET_KEY=" .env || echo "JWT_SECRET_KEY=wit-jwt-secret-key-production-2024-min-32-chars" >> .env
               # Garantir que SECRET_KEY existe

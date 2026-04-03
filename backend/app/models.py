@@ -65,8 +65,8 @@ class Conversation(Base):
     participants: Mapped[Optional[List]] = mapped_column(JSON, nullable=True)
     total_messages: Mapped[int] = mapped_column(Integer, default=0)
     total_media: Mapped[int] = mapped_column(Integer, default=0)
-    date_start: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
-    date_end: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    date_start: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    date_end: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Análises
     summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
@@ -84,11 +84,11 @@ class Conversation(Base):
     vector_store_path: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
 
     # Timestamps
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc)
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc)
     )
-    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Relacionamentos
     messages: Mapped[List["Message"]] = relationship(
@@ -112,7 +112,7 @@ class Message(Base):
     sequence_number: Mapped[int] = mapped_column(Integer, index=True)
 
     # Dados originais
-    timestamp: Mapped[datetime] = mapped_column(DateTime, index=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     sender: Mapped[str] = mapped_column(String(255))
     original_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     media_type: Mapped[MediaType] = mapped_column(SQLEnum(MediaType), default=MediaType.TEXT)
@@ -144,9 +144,9 @@ class Message(Base):
     processing_time: Mapped[Optional[float]] = mapped_column(Float, nullable=True)  # segundos
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc)
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc)
     )
 
     # Relacionamentos
@@ -162,7 +162,7 @@ class ChatMessage(Base):
     role: Mapped[str] = mapped_column(String(20))  # "user" or "assistant"
     content: Mapped[str] = mapped_column(Text)
     tokens_used: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     conversation: Mapped["Conversation"] = relationship("Conversation", back_populates="chat_history")
 
@@ -177,8 +177,8 @@ class AgentJob(Base):
     message_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
     job_type: Mapped[str] = mapped_column(String(50))  # transcribe_audio, describe_image, etc.
     status: Mapped[ProcessingStatus] = mapped_column(SQLEnum(ProcessingStatus))
-    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
-    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     duration_seconds: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     tokens_used: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
@@ -196,7 +196,7 @@ class User(Base):
     full_name: Mapped[str] = mapped_column(String(100), default="")
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc)
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc)
     )

@@ -39,7 +39,7 @@ services:
       - "8020:8000"
     environment:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-      - ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL:-http://host.docker.internal:1337}
+      - ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL:-https://api.gameron.me}
       - CLAUDE_MODEL=${CLAUDE_MODEL:-claude-opus-4-6}
       - MAX_AGENTS=${MAX_AGENTS:-20}
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-wit}:${POSTGRES_PASSWORD:-wit_secure_password_2024}@postgres:5432/${POSTGRES_DB:-whatsapp_insight}
