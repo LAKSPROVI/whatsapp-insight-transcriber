@@ -298,13 +298,14 @@ async def get_progress(
     - **404 Not Found**: Session ID não encontrado.
     - **401 Unauthorized**: Token ausente ou inválido.
     """
-    # Buscar no banco para dados mais precisos
+    # Buscar no banco — única fonte de verdade
+    # (em ambientes multi-worker, _progress_store não é compartilhado entre processos)
     stmt = select(Conversation).where(Conversation.session_id == session_id)
     result = await db.execute(stmt)
     conv = result.scalar_one_or_none()
 
     if not conv:
-        # Verificar store em memória
+        # Fallback: verificar store em memória (mesmo worker)
         progress = _progress_store.get(session_id)
         if not progress:
             raise HTTPException(404, "Sessão não encontrada")
@@ -320,7 +321,7 @@ async def get_progress(
         status=conv.status,
         progress=conv.progress,
         progress_message=conv.progress_message,
-        total_messages=conv.total_messages,
+        total_messages=conv.total_messages or 0,
     )
 
 
