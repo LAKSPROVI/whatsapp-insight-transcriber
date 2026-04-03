@@ -66,6 +66,57 @@ class ConversationProcessor:
         conversation = None
         step = "init"
         failed_steps: List[str] = []
+        # Timeout global de 15 minutos para toda a pipeline
+        PIPELINE_TIMEOUT = 900.0
+
+        try:
+            # Wrap entire pipeline in a global timeout
+            return await asyncio.wait_for(
+                self._process_upload_inner(
+                    zip_path=zip_path,
+                    original_filename=original_filename,
+                    session_id=session_id,
+                    progress_callback=progress_callback,
+                ),
+                timeout=PIPELINE_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            logger.error(
+                "conversation_upload_timeout",
+                event="conversation.upload.timeout",
+                session_id=session_id,
+                timeout=PIPELINE_TIMEOUT,
+            )
+            # Tentar atualizar o status no banco
+            try:
+                stmt = select(Conversation).where(Conversation.session_id == session_id)
+                result = await self.db.execute(stmt)
+                conversation = result.scalar_one_or_none()
+                if conversation:
+                    await self._update_conversation(conversation, {
+                        "status": ProcessingStatus.FAILED,
+                        "progress_message": f"Timeout: processamento excedeu {int(PIPELINE_TIMEOUT/60)} minutos",
+                    })
+                    if progress_callback:
+                        await self._notify_progress(progress_callback, conversation)
+            except Exception:
+                pass
+            raise ProcessingError(
+                detail=f"Timeout: processamento excedeu {int(PIPELINE_TIMEOUT/60)} minutos",
+                context={"session_id": session_id},
+            )
+
+    async def _process_upload_inner(
+        self,
+        zip_path: str,
+        original_filename: str,
+        session_id: str,
+        progress_callback: Optional[Callable] = None,
+    ) -> Conversation:
+        """Pipeline interno de processamento (chamado com timeout global)."""
+        conversation = None
+        step = "init"
+        failed_steps: List[str] = []
 
         try:
             # ─── 1. Buscar registro existente ou criar na DB ──────────────
@@ -112,8 +163,8 @@ class ConversationProcessor:
             step = "parse"
             try:
                 parser = WhatsAppParser()
-                chat_file, media_files = parser.extract_zip(zip_path, extract_dir)
-                parsed_messages = parser.parse_file(chat_file)
+                chat_file, media_files = await parser.extract_zip(zip_path, extract_dir)
+                parsed_messages = await parser.parse_file(chat_file)
 
                 if not parsed_messages:
                     raise ParserError(
@@ -322,9 +373,10 @@ class ConversationProcessor:
                 if resolved_path and os.path.exists(resolved_path):
                     media_path = resolved_path
                     media_url = f"{base_url}/{parsed.media_filename}"
-                    # Extrair metadados da mídia
+                    # Extrair metadados da mídia (async para não bloquear event loop)
                     try:
-                        media_metadata = MediaMetadataExtractor.extract(resolved_path)
+                        extractor = MediaMetadataExtractor()
+                        media_metadata = await extractor.extract_async(resolved_path)
                     except Exception as e:
                         logger.warning(f"Erro ao extrair metadados de {parsed.media_filename}: {e}")
 

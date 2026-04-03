@@ -18,7 +18,8 @@ from app.services.whatsapp_parser import (
 class TestParseBasicMessage:
     """Testes para parse de mensagens básicas."""
 
-    def test_parse_basic_message(self):
+    @pytest.mark.asyncio
+    async def test_parse_basic_message(self):
         """Mensagem simples no formato Android PT-BR."""
         parser = WhatsAppParser()
         content = "26/03/2025, 23:10 - João: Olá, tudo bem?"
@@ -29,7 +30,7 @@ class TestParseBasicMessage:
             temp_path = f.name
 
         try:
-            messages = parser.parse_file(temp_path)
+            messages = await parser.parse_file(temp_path)
             assert len(messages) >= 1
             msg = messages[0]
             assert msg.sender == "João"
@@ -38,7 +39,8 @@ class TestParseBasicMessage:
         finally:
             os.unlink(temp_path)
 
-    def test_parse_multiple_messages(self):
+    @pytest.mark.asyncio
+    async def test_parse_multiple_messages(self):
         """Múltiplas mensagens em sequência."""
         parser = WhatsAppParser()
         content = (
@@ -53,7 +55,7 @@ class TestParseBasicMessage:
             temp_path = f.name
 
         try:
-            messages = parser.parse_file(temp_path)
+            messages = await parser.parse_file(temp_path)
             assert len(messages) >= 3
             senders = {m.sender for m in messages}
             assert "João" in senders
@@ -66,7 +68,8 @@ class TestParseBasicMessage:
 class TestParseSystemMessage:
     """Testes para mensagens de sistema."""
 
-    def test_parse_system_message(self):
+    @pytest.mark.asyncio
+    async def test_parse_system_message(self):
         """Mensagens de sistema são ignoradas (retornam None no _parse_line)."""
         parser = WhatsAppParser()
         content = (
@@ -80,7 +83,7 @@ class TestParseSystemMessage:
             temp_path = f.name
 
         try:
-            messages = parser.parse_file(temp_path)
+            messages = await parser.parse_file(temp_path)
             # Mensagem de sistema deve ser filtrada
             user_messages = [m for m in messages if not m.is_system]
             assert len(user_messages) >= 1
@@ -92,7 +95,8 @@ class TestParseSystemMessage:
 class TestParseMediaMessage:
     """Testes para mensagens com mídia."""
 
-    def test_parse_media_message(self):
+    @pytest.mark.asyncio
+    async def test_parse_media_message(self):
         """Mensagem com mídia omitida."""
         parser = WhatsAppParser()
         content = "26/03/2025, 10:00 - João: <Mídia omitida>"
@@ -103,12 +107,13 @@ class TestParseMediaMessage:
             temp_path = f.name
 
         try:
-            messages = parser.parse_file(temp_path)
+            messages = await parser.parse_file(temp_path)
             assert len(messages) >= 1
         finally:
             os.unlink(temp_path)
 
-    def test_parse_media_attached(self):
+    @pytest.mark.asyncio
+    async def test_parse_media_attached(self):
         """Mensagem com arquivo anexado."""
         parser = WhatsAppParser()
         content = "26/03/2025, 10:00 - Maria: IMG-20250326-WA0001.jpg (arquivo anexado)"
@@ -119,7 +124,7 @@ class TestParseMediaMessage:
             temp_path = f.name
 
         try:
-            messages = parser.parse_file(temp_path)
+            messages = await parser.parse_file(temp_path)
             assert len(messages) >= 1
         finally:
             os.unlink(temp_path)
@@ -146,7 +151,8 @@ class TestParseEditedMessage:
 class TestParseMultilineMessage:
     """Testes para mensagens multi-linha."""
 
-    def test_parse_multiline_message(self):
+    @pytest.mark.asyncio
+    async def test_parse_multiline_message(self):
         """Mensagem que ocupa múltiplas linhas."""
         parser = WhatsAppParser()
         content = (
@@ -162,7 +168,7 @@ class TestParseMultilineMessage:
             temp_path = f.name
 
         try:
-            messages = parser.parse_file(temp_path)
+            messages = await parser.parse_file(temp_path)
             assert len(messages) >= 2
             # A primeira mensagem deve conter as linhas extras
             joao_msg = [m for m in messages if m.sender == "João"]
@@ -175,7 +181,8 @@ class TestParseMultilineMessage:
 class TestParseDateFormats:
     """Testes para diferentes formatos de data."""
 
-    def test_parse_android_format(self):
+    @pytest.mark.asyncio
+    async def test_parse_android_format(self):
         """Formato Android: dd/mm/yyyy, HH:MM"""
         parser = WhatsAppParser()
         content = "26/03/2025, 23:10 - João: Mensagem"
@@ -186,12 +193,13 @@ class TestParseDateFormats:
             temp_path = f.name
 
         try:
-            messages = parser.parse_file(temp_path)
+            messages = await parser.parse_file(temp_path)
             assert len(messages) >= 1
         finally:
             os.unlink(temp_path)
 
-    def test_parse_ios_format(self):
+    @pytest.mark.asyncio
+    async def test_parse_ios_format(self):
         """Formato iOS: [dd/mm/yyyy, HH:MM:SS]"""
         parser = WhatsAppParser()
         content = "[26/03/2025, 23:10:15] João: Mensagem iOS"
@@ -202,12 +210,13 @@ class TestParseDateFormats:
             temp_path = f.name
 
         try:
-            messages = parser.parse_file(temp_path)
+            messages = await parser.parse_file(temp_path)
             assert len(messages) >= 1
         finally:
             os.unlink(temp_path)
 
-    def test_parse_iso_format(self):
+    @pytest.mark.asyncio
+    async def test_parse_iso_format(self):
         """Formato ISO: yyyy-mm-dd, HH:MM"""
         parser = WhatsAppParser()
         content = "2025-03-26, 23:10 - João: Mensagem ISO"
@@ -218,7 +227,7 @@ class TestParseDateFormats:
             temp_path = f.name
 
         try:
-            messages = parser.parse_file(temp_path)
+            messages = await parser.parse_file(temp_path)
             assert len(messages) >= 1
         finally:
             os.unlink(temp_path)
@@ -227,7 +236,8 @@ class TestParseDateFormats:
 class TestParseEdgeCases:
     """Testes para casos extremos."""
 
-    def test_parse_empty_input(self):
+    @pytest.mark.asyncio
+    async def test_parse_empty_input(self):
         """Input vazio deve levantar ParserError."""
         from app.exceptions import ParserError
         
@@ -240,11 +250,12 @@ class TestParseEdgeCases:
 
         try:
             with pytest.raises(ParserError):
-                parser.parse_file(temp_path)
+                await parser.parse_file(temp_path)
         finally:
             os.unlink(temp_path)
 
-    def test_parse_invalid_format(self):
+    @pytest.mark.asyncio
+    async def test_parse_invalid_format(self):
         """Texto sem formato de chat retorna lista vazia ou sem mensagens válidas."""
         parser = WhatsAppParser()
         content = "Este texto não é uma exportação do WhatsApp.\nApenas texto normal."
@@ -255,13 +266,14 @@ class TestParseEdgeCases:
             temp_path = f.name
 
         try:
-            messages = parser.parse_file(temp_path)
+            messages = await parser.parse_file(temp_path)
             # Texto sem formato válido deve retornar 0 mensagens parseadas
             assert len(messages) == 0
         finally:
             os.unlink(temp_path)
 
-    def test_parser_participants_tracking(self):
+    @pytest.mark.asyncio
+    async def test_parser_participants_tracking(self):
         """Parser rastreia participantes corretamente."""
         parser = WhatsAppParser()
         content = (
@@ -276,7 +288,7 @@ class TestParseEdgeCases:
             temp_path = f.name
 
         try:
-            messages = parser.parse_file(temp_path)
+            messages = await parser.parse_file(temp_path)
             assert "João" in parser.participants
             assert "Maria" in parser.participants
         finally:

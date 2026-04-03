@@ -7,11 +7,13 @@ import re
 import zipfile
 import os
 import shutil
+import asyncio
 from datetime import datetime
 from pathlib import Path
 from typing import List, Tuple, Optional, Dict
 from dataclasses import dataclass, field
 
+import aiofiles
 from app.exceptions import ParserError
 from app.logging import get_logger
 
@@ -187,9 +189,9 @@ class WhatsAppParser:
         self.media_files: Dict[str, str] = {}  # filename -> full_path
         self._date_format: Optional[str] = None  # formato detectado
 
-    def extract_zip(self, zip_path: str, extract_dir: str) -> Tuple[str, List[str]]:
+    async def extract_zip(self, zip_path: str, extract_dir: str) -> Tuple[str, List[str]]:
         """
-        Extrai o arquivo ZIP do WhatsApp.
+        Extrai o arquivo ZIP do WhatsApp (async - não bloqueia o event loop).
         Retorna: (caminho do arquivo .txt, lista de arquivos de mídia)
         """
         try:
@@ -199,16 +201,21 @@ class WhatsAppParser:
             chat_file = None
             media_files = []
 
-            with zipfile.ZipFile(zip_path, "r") as zf:
-                # Validar contra path traversal
-                for member in zf.namelist():
-                    member_path = os.path.normpath(member)
-                    if member_path.startswith("..") or os.path.isabs(member_path):
-                        raise ParserError(
-                            detail=f"Caminho suspeito no ZIP (path traversal): {member}",
-                            context={"file": member, "zip_path": zip_path},
-                        )
-                zf.extractall(extract_path)
+            def _extract_sync():
+                with zipfile.ZipFile(zip_path, "r") as zf:
+                    # Validar contra path traversal
+                    for member in zf.namelist():
+                        member_path = os.path.normpath(member)
+                        if member_path.startswith("..") or os.path.isabs(member_path):
+                            raise ParserError(
+                                detail=f"Caminho suspeito no ZIP (path traversal): {member}",
+                                context={"file": member, "zip_path": zip_path},
+                            )
+                    zf.extractall(extract_path)
+
+            # Executar extração em thread pool para não bloquear o event loop
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, _extract_sync)
 
             # Localizar arquivo de chat e mídias
             for file_path in extract_path.rglob("*"):
@@ -241,8 +248,7 @@ class WhatsAppParser:
                 )
 
             logger.info(
-                "zip_extracted",
-                event="parser.zip.extracted",
+                "parser.zip.extracted",
                 files_count=len(list(extract_path.rglob("*"))),
                 media_count=len(media_files),
                 chat_file=chat_file,
@@ -263,16 +269,16 @@ class WhatsAppParser:
                 context={"zip_path": zip_path, "original_error": str(e)},
             )
 
-    def parse_file(self, chat_file: str) -> List[ParsedMessage]:
-        """Parse completo do arquivo de chat"""
+    async def parse_file(self, chat_file: str) -> List[ParsedMessage]:
+        """Parse completo do arquivo de chat (async - não bloqueia o event loop)"""
         # Reset de estado mutável
         self.participants = set()
         self.messages = []
         self._date_format = None
 
         try:
-            with open(chat_file, "r", encoding="utf-8", errors="replace") as f:
-                content = f.read()
+            async with aiofiles.open(chat_file, "r", encoding="utf-8", errors="replace") as f:
+                content = await f.read()
         except (IOError, OSError) as e:
             raise ParserError(
                 detail=f"Erro ao ler arquivo de chat: {str(e)}",
@@ -306,8 +312,7 @@ class WhatsAppParser:
         self.messages = messages
         date_start, date_end = self.get_date_range()
         logger.info(
-            "chat_parsed",
-            event="parser.chat.parsed",
+            "parser.chat.parsed",
             messages_count=len(messages),
             participants_count=len(self.participants),
             date_range=f"{date_start} - {date_end}" if date_start else None,

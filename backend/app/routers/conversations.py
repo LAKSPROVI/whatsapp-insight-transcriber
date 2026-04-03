@@ -12,6 +12,7 @@ import zipfile
 from pathlib import Path
 from typing import List, Optional
 
+import aiofiles
 from fastapi import APIRouter, Depends, File, UploadFile, HTTPException, BackgroundTasks
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -166,10 +167,10 @@ async def upload_conversation(
     # Criar session ID único
     session_id = str(uuid.uuid4())
 
-    # Salvar arquivo
+    # Salvar arquivo (async para não bloquear o event loop)
     upload_path = settings.UPLOAD_DIR / f"{session_id}.zip"
-    with open(upload_path, "wb") as f:
-        f.write(content)
+    async with aiofiles.open(upload_path, "wb") as f:
+        await f.write(content)
 
     logger.info(
         f"Upload recebido de {current_user.username}: "

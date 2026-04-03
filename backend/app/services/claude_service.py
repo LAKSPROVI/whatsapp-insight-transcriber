@@ -453,8 +453,10 @@ Responda apenas com a transcrição corrigida."""
 
     async def _describe_image_vision(self, path: Path, file_path: str) -> Dict[str, Any]:
         """Tenta descrever imagem usando Claude Vision (base64)."""
-        with open(file_path, "rb") as f:
-            image_data = base64.standard_b64encode(f.read()).decode("utf-8")
+        import aiofiles
+        async with aiofiles.open(file_path, "rb") as f:
+            raw_data = await f.read()
+        image_data = base64.standard_b64encode(raw_data).decode("utf-8")
 
         ext = path.suffix.lower()
         media_type_map = {
