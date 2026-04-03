@@ -18,8 +18,11 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.config import settings, validate_settings
-from app.metrics import setup_instrumentator
-from app.database import init_db
+try:
+    from app.metrics import setup_instrumentator
+except ImportError:
+    setup_instrumentator = None
+from app.database import bootstrap_db
 from app.dependencies import get_orchestrator, shutdown_orchestrator
 from app.routers import conversations, chat, export, auth, search, templates
 from app.routers.ws import router as ws_router
@@ -111,12 +114,9 @@ async def lifespan(app: FastAPI):
     validate_settings(settings)
     logger.info("✅ Configurações validadas")
 
-    # Inicializar banco de dados
-    await init_db()
-    
-    # Não rodar run_migrations no startup, gera crash de dependência
-    # O init_db cria as tabelas via SQLAlchemy se não existirem
-    logger.info("✅ Banco de dados inicializado")
+    # Inicializar banco de dados preferindo migrações versionadas
+    db_bootstrap_mode = await bootstrap_db()
+    logger.info(f"✅ Banco de dados inicializado via {db_bootstrap_mode}")
 
     # Garantir admin user no banco de dados
     from app.auth import ensure_admin_user
@@ -247,13 +247,15 @@ app.add_middleware(RateLimitMiddleware)
 app.add_middleware(RequestTracingMiddleware)
 
 # ─── Prometheus Metrics ───────────────────────────────────────────────────────
-instrumentator = setup_instrumentator()
-instrumentator.instrument(app)
+instrumentator = setup_instrumentator() if setup_instrumentator else None
+if instrumentator is not None:
+    instrumentator.instrument(app)
 
 
 @app.on_event("startup")
 async def _startup():
-    instrumentator.expose(app, endpoint="/metrics", include_in_schema=False)
+    if instrumentator is not None:
+        instrumentator.expose(app, endpoint="/metrics", include_in_schema=False)
 
 # ─── Routers ──────────────────────────────────────────────────────────────────
 app.include_router(auth.router, prefix="/api")
