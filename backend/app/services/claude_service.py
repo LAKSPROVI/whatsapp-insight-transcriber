@@ -44,11 +44,24 @@ BACKOFF_MULTIPLIER = 2.0
 RATE_LIMIT_INITIAL_WAIT = 5.0  # segundos
 
 
-class ClaudeService:
-    """
-    Serviço central de IA usando Claude via proxy.
-    Todas as chamadas são assíncronas e otimizadas para paralelismo.
-    """
+    # ─── Model tier ordering for fallback (best → cheapest) ────────────────────
+    MODEL_FALLBACK_ORDER = [
+        "claude-opus-4-6",
+        "claude-sonnet-4-20250514",
+        "claude-haiku-4-20250414",
+    ]
+
+    # ─── Operation → model mapping ────────────────────────────────────────────
+    OPERATION_MODEL_MAP: Dict[str, str] = {
+        "transcribe_audio": "CLAUDE_MODEL_SIMPLE",
+        "describe_image": "CLAUDE_MODEL_ANALYSIS",
+        "transcribe_video": "CLAUDE_MODEL_ANALYSIS",
+        "analyze_sentiment": "CLAUDE_MODEL_SIMPLE",
+        "generate_summary": "CLAUDE_MODEL_ANALYSIS",
+        "detect_contradictions": "CLAUDE_MODEL_CHAT",
+        "extract_keywords": "CLAUDE_MODEL_SIMPLE",
+        "chat": "CLAUDE_MODEL_CHAT",
+    }
 
     def __init__(self):
         self.client = anthropic.AsyncAnthropic(
@@ -66,6 +79,36 @@ class ClaudeService:
         self._total_errors = 0
         self._total_retries = 0
         self._rate_limit_hits = 0
+
+    def get_model_for_operation(self, operation: str) -> str:
+        """
+        Returns the appropriate model for a given operation type.
+        Falls back to self.model if the operation is unknown.
+        """
+        config_attr = self.OPERATION_MODEL_MAP.get(operation)
+        if config_attr:
+            model = getattr(settings, config_attr, self.model)
+            logger.debug(
+                "model_selected_for_operation",
+                operation=operation,
+                model=model,
+                config_key=config_attr,
+            )
+            return model
+        return self.model
+
+    def _get_fallback_model(self, current_model: str) -> Optional[str]:
+        """
+        Returns the next cheaper model in the fallback chain.
+        Returns None if there is no cheaper tier available.
+        """
+        try:
+            idx = self.MODEL_FALLBACK_ORDER.index(current_model)
+            if idx < len(self.MODEL_FALLBACK_ORDER) - 1:
+                return self.MODEL_FALLBACK_ORDER[idx + 1]
+        except ValueError:
+            pass
+        return None
 
     async def _call_claude_with_retry(
         self,
@@ -86,8 +129,7 @@ class ClaudeService:
                     start_time = time.time()
                     with new_span("claude.api_call"):
                         logger.info(
-                            "claude_api_call_started",
-                            event="ai.api_call.started",
+                            "ai.api_call.started",
                             ai_model=kwargs.get("model", self.model),
                             operation=operation,
                             attempt=attempt + 1,
@@ -98,8 +140,7 @@ class ClaudeService:
                         )
                         latency_ms = round((time.time() - start_time) * 1000, 2)
                         logger.info(
-                            "claude_api_call_completed",
-                            event="ai.api_call.completed",
+                            "ai.api_call.completed",
                             ai_model=kwargs.get("model", self.model),
                             ai_tokens_input=result.usage.input_tokens,
                             ai_tokens_output=result.usage.output_tokens,
@@ -127,8 +168,7 @@ class ClaudeService:
 
                     last_error = f"Rate limit (429): {str(e)}"
                     logger.error(
-                        "claude_api_call_failed",
-                        event="ai.api_call.failed",
+                        "ai.api_call.failed",
                         error_type="RateLimitError",
                         operation=operation,
                         attempt=attempt + 1,
@@ -164,8 +204,7 @@ class ClaudeService:
                     ]):
                         self._total_errors += 1
                         logger.error(
-                            "claude_api_call_failed",
-                            event="ai.api_call.failed",
+                            "ai.api_call.failed",
                             error_type="APIStatusError",
                             operation=operation,
                             status_code=status,
@@ -177,8 +216,7 @@ class ClaudeService:
                     if status >= 500 and attempt < MAX_RETRIES - 1:
                         wait_time = BACKOFF_BASE * (BACKOFF_MULTIPLIER ** attempt)
                         logger.warning(
-                            "claude_api_server_error",
-                            event="ai.api_call.failed",
+                            "ai.api_call.failed",
                             error_type="APIStatusError",
                             operation=operation,
                             status_code=status,
@@ -211,8 +249,7 @@ class ClaudeService:
                     last_error = str(e)
                     self._total_errors += 1
                     logger.error(
-                        "claude_api_call_failed",
-                        event="ai.api_call.failed",
+                        "ai.api_call.failed",
                         error_type=type(e).__name__,
                         operation=operation,
                         attempt=attempt + 1,

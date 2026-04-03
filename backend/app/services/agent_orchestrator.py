@@ -117,8 +117,7 @@ class AIAgent:
         retries_used = 0
 
         logger.info(
-            "agent_job_started",
-            event="agent.job.started",
+            "agent.job.started",
             agent_id=self.agent_id,
             job_id=job.job_id,
             job_type=job.job_type.value,
@@ -140,8 +139,7 @@ class AIAgent:
                 self.total_processing_time += processing_time
 
                 logger.info(
-                    "agent_job_completed",
-                    event="agent.job.completed",
+                    "agent.job.completed",
                     agent_id=self.agent_id,
                     job_id=job.job_id,
                     job_type=job.job_type.value,
@@ -202,8 +200,7 @@ class AIAgent:
         self.errors += 1
 
         logger.error(
-            "agent_job_failed",
-            event="agent.job.failed",
+            "agent.job.failed",
             agent_id=self.agent_id,
             job_id=job.job_id,
             job_type=job.job_type.value,

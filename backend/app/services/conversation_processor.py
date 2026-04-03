@@ -82,8 +82,7 @@ class ConversationProcessor:
             )
         except asyncio.TimeoutError:
             logger.error(
-                "conversation_upload_timeout",
-                event="conversation.upload.timeout",
+                "conversation.upload.timeout",
                 session_id=session_id,
                 timeout=PIPELINE_TIMEOUT,
             )
@@ -184,8 +183,7 @@ class ConversationProcessor:
             conversation_name = self._infer_conversation_name(original_filename, participants)
 
             logger.info(
-                "conversation_parse_completed",
-                event="conversation.parse.completed",
+                "conversation.parse.completed",
                 session_id=session_id,
                 messages_count=len(parsed_messages),
                 participants_count=len(participants),
@@ -223,8 +221,7 @@ class ConversationProcessor:
             if media_messages:
                 try:
                     logger.info(
-                        "conversation_media_processing",
-                        event="conversation.media.processing",
+                        "conversation.media.processing",
                         session_id=session_id,
                         media_count=len(media_messages),
                         agents_active=settings.MAX_AGENTS,
@@ -254,8 +251,7 @@ class ConversationProcessor:
             step = "advanced_analysis"
             try:
                 logger.info(
-                    "conversation_analysis_started",
-                    event="conversation.analysis.started",
+                    "conversation.analysis.started",
                     session_id=session_id,
                     conversation_id=conversation.id,
                 )
@@ -268,15 +264,13 @@ class ConversationProcessor:
 
                 await self._run_advanced_analysis(conversation, parsed_messages)
                 logger.info(
-                    "conversation_analysis_completed",
-                    event="conversation.analysis.completed",
+                    "conversation.analysis.completed",
                     session_id=session_id,
                     conversation_id=conversation.id,
                 )
             except Exception as e:
                 logger.error(
-                    "conversation_analysis_failed",
-                    event="conversation.analysis.failed",
+                    "conversation.analysis.failed",
                     session_id=session_id,
                     step=step,
                     error_type=type(e).__name__,
@@ -308,8 +302,7 @@ class ConversationProcessor:
                 await self._notify_progress(progress_callback, conversation)
 
             logger.info(
-                "conversation_upload_completed",
-                event="conversation.upload.completed",
+                "conversation.upload.completed",
                 session_id=session_id,
                 conversation_id=conversation.id,
                 failed_steps=failed_steps or None,
@@ -319,8 +312,7 @@ class ConversationProcessor:
         except (ParserError, ProcessingError, APIError) as e:
             # Exceções de negócio — repassar com status atualizado
             logger.error(
-                "conversation_upload_failed",
-                event="conversation.upload.failed",
+                "conversation.upload.failed",
                 session_id=session_id,
                 step=step,
                 error_type=type(e).__name__,
@@ -335,8 +327,7 @@ class ConversationProcessor:
 
         except Exception as e:
             logger.error(
-                "conversation_upload_failed",
-                event="conversation.upload.failed",
+                "conversation.upload.failed",
                 session_id=session_id,
                 step=step,
                 error_type=type(e).__name__,

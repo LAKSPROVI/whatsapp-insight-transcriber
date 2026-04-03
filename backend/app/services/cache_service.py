@@ -103,8 +103,7 @@ async def get_cached_result(key: str) -> Optional[Any]:
             ttl_remaining = await redis.ttl(key)
             key_pattern = key.split(":")[0] if ":" in key else key
             logger.info(
-                "cache_hit",
-                event="cache.redis.hit",
+                "cache.redis.hit",
                 key_pattern=key_pattern,
                 ttl=ttl_remaining,
             )
@@ -113,16 +112,14 @@ async def get_cached_result(key: str) -> Optional[Any]:
             _stats["misses"] += 1
             key_pattern = key.split(":")[0] if ":" in key else key
             logger.info(
-                "cache_miss",
-                event="cache.redis.miss",
+                "cache.redis.miss",
                 key_pattern=key_pattern,
             )
             return None
     except Exception as e:
         _stats["errors"] += 1
         logger.error(
-            "cache_error",
-            event="cache.redis.error",
+            "cache.redis.error",
             operation="get",
             **get_error_suggestion(exc=e),
         )
@@ -150,8 +147,7 @@ async def set_cached_result(key: str, value: Any, ttl: Optional[int] = None) -> 
     except Exception as e:
         _stats["errors"] += 1
         logger.error(
-            "cache_error",
-            event="cache.redis.error",
+            "cache.redis.error",
             operation="set",
             **get_error_suggestion(exc=e),
         )

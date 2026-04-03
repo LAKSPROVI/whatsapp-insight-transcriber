@@ -18,6 +18,7 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.config import settings, validate_settings
+from app.metrics import setup_instrumentator
 from app.database import init_db
 from app.dependencies import get_orchestrator, shutdown_orchestrator
 from app.routers import conversations, chat, export, auth, search, templates
@@ -112,6 +113,9 @@ async def lifespan(app: FastAPI):
 
     # Inicializar banco de dados
     await init_db()
+    
+    # Não rodar run_migrations no startup, gera crash de dependência
+    # O init_db cria as tabelas via SQLAlchemy se não existirem
     logger.info("✅ Banco de dados inicializado")
 
     # Garantir admin user no banco de dados
@@ -242,6 +246,15 @@ app.add_middleware(GZipMiddleware, minimum_size=1000)
 app.add_middleware(RateLimitMiddleware)
 app.add_middleware(RequestTracingMiddleware)
 
+# ─── Prometheus Metrics ───────────────────────────────────────────────────────
+instrumentator = setup_instrumentator()
+instrumentator.instrument(app)
+
+
+@app.on_event("startup")
+async def _startup():
+    instrumentator.expose(app, endpoint="/metrics", include_in_schema=False)
+
 # ─── Routers ──────────────────────────────────────────────────────────────────
 app.include_router(auth.router, prefix="/api")
 app.include_router(conversations.router, prefix="/api")
@@ -258,8 +271,7 @@ async def app_exception_handler(request: Request, exc: AppBaseException):
     """Handler para todas as excecoes customizadas da aplicacao."""
     error_info = get_error_suggestion(exc=exc)
     logger.warning(
-        "app_exception",
-        event="error.app_exception.handled",
+        "error.app_exception.handled",
         error_type=exc.__class__.__name__,
         error_message=exc.detail,
         error_code=error_info.get("error_code"),
@@ -281,8 +293,7 @@ async def generic_exception_handler(request: Request, exc: Exception):
     """Handler generico para excecoes nao tratadas (500)."""
     error_info = get_error_suggestion(exc=exc)
     logger.error(
-        "unhandled_exception",
-        event="error.unhandled.critical",
+        "error.unhandled.critical",
         error_type=exc.__class__.__name__,
         error_message=str(exc)[:512],
         error_code=error_info.get("error_code"),

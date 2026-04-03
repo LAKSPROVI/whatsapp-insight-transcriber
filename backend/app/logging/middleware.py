@@ -87,8 +87,7 @@ class RequestTracingMiddleware(BaseHTTPMiddleware):
         # ── Log request started ───────────────────────────────
         if not is_silent:
             logger.info(
-                "request_started",
-                event="http.request.started",
+                "http.request.started",
                 http_method=request.method,
                 http_url=str(request.url.path),
                 http_query=str(request.url.query) if request.url.query else None,
@@ -111,8 +110,7 @@ class RequestTracingMiddleware(BaseHTTPMiddleware):
                 log_level = "info" if response.status_code < 400 else "warning"
                 log_method = getattr(logger, log_level)
                 log_method(
-                    "request_completed",
-                    event="http.request.completed",
+                    "http.request.completed",
                     http_method=request.method,
                     http_url=str(request.url.path),
                     http_status_code=response.status_code,
@@ -130,8 +128,7 @@ class RequestTracingMiddleware(BaseHTTPMiddleware):
             error_info = get_error_suggestion(exc=exc)
 
             logger.error(
-                "request_failed",
-                event="http.request.failed",
+                "http.request.failed",
                 http_method=request.method,
                 http_url=str(request.url.path),
                 http_duration_ms=duration_ms,
