@@ -37,9 +37,32 @@ AsyncSessionLocal = async_sessionmaker(
 
 
 async def init_db():
-    """Cria todas as tabelas se não existirem"""
+    """Cria todas as tabelas se não existirem.
+    
+    NOTE: This is for development only. In production, use run_migrations()
+    which applies Alembic migrations for proper schema versioning.
+    """
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+
+def run_migrations():
+    """Run Alembic migrations programmatically for production deployments.
+    
+    This ensures the database schema is up-to-date using versioned migrations
+    instead of create_all(), which doesn't handle schema changes.
+    """
+    from alembic.config import Config
+    from alembic import command
+    import os
+
+    try:
+        alembic_cfg = Config(os.path.join(os.path.dirname(os.path.dirname(__file__)), "alembic.ini"))
+        alembic_cfg.set_main_option("sqlalchemy.url", settings.DATABASE_URL.replace("+asyncpg", "").replace("+aiosqlite", ""))
+        command.upgrade(alembic_cfg, "head")
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"Could not run migrations: {e}")
 
 
 async def get_db() -> AsyncSession:
