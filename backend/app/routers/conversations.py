@@ -12,6 +12,8 @@ import zipfile
 from pathlib import Path
 from typing import List, Optional
 
+import asyncio
+import asyncio
 import aiofiles
 from fastapi import APIRouter, Depends, File, UploadFile, HTTPException, BackgroundTasks
 from fastapi.responses import JSONResponse
@@ -198,13 +200,15 @@ async def upload_conversation(
         "message": "Upload concluído",
     }
 
-    # Processar em background
-    background_tasks.add_task(
-        _process_in_background,
-        session_id=session_id,
-        zip_path=str(upload_path),
-        original_filename=file.filename,
-        orchestrator=orchestrator,
+    # Processar em background usando asyncio.create_task
+    # (BackgroundTasks só executa após enviar response E compete pelo event loop)
+    asyncio.create_task(
+        _process_in_background(
+            session_id=session_id,
+            zip_path=str(upload_path),
+            original_filename=file.filename,
+            orchestrator=orchestrator,
+        )
     )
 
     return UploadResponse(

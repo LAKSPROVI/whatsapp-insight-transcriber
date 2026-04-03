@@ -1,6 +1,12 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   output: 'standalone',
+  // Permitir uploads grandes (600MB) pelo proxy rewrite
+  experimental: {
+    serverActions: {
+      bodySizeLimit: '600mb',
+    },
+  },
   async rewrites() {
     return [
       {
