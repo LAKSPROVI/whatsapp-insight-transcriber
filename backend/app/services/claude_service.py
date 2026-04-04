@@ -457,10 +457,10 @@ Responda com: [Áudio recebido - transcrição via Whisper indisponível. {metad
             transcription_raw = None
 
         if transcription_raw:
-                message = await self._call_claude_with_retry(
-                    operation="transcribe_audio",
-                    model=self.get_model_for_operation("transcribe_audio"),
-                    max_tokens=2048,
+            message = await self._call_claude_with_retry(
+                operation="transcribe_audio",
+                model=self.get_model_for_operation("transcribe_audio"),
+                max_tokens=2048,
                 messages=[{
                     "role": "user",
                     "content": f"""Corrija e formate esta transcrição de áudio do WhatsApp:
