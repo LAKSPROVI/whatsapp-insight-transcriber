@@ -44,6 +44,7 @@ BACKOFF_MULTIPLIER = 2.0
 RATE_LIMIT_INITIAL_WAIT = 5.0  # segundos
 
 
+class ClaudeService:
     # ─── Model tier ordering for fallback (best → cheapest) ────────────────────
     MODEL_FALLBACK_ORDER = [
         "claude-opus-4-6",
