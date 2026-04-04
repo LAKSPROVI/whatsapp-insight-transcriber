@@ -137,42 +137,40 @@ jobs:
           ssh ${{ env.HETZNER_USER }}@${{ env.HETZNER_HOST }} << 'EOF'
             cd ${{ env.APP_DIR }}
             
-            cat > .env <<'ENVEOF'
-ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}
-ANTHROPIC_BASE_URL=${{ secrets.ANTHROPIC_BASE_URL }}
-ANTHROPIC_DIRECT_URL=https://api.anthropic.com
-CLAUDE_MODEL=claude-opus-4-6
-CLAUDE_MODEL_CHAT=claude-opus-4-6
-CLAUDE_MODEL_ANALYSIS=claude-sonnet-4-20250514
-CLAUDE_MODEL_SIMPLE=claude-haiku-4-20250414
-MAX_AGENTS=20
-DATABASE_URL=postgresql+asyncpg://${{ secrets.POSTGRES_USER }}:${{ secrets.POSTGRES_PASSWORD }}@postgres:5432/${{ secrets.POSTGRES_DB }}
-RUN_DB_MIGRATIONS_ON_STARTUP=true
-UPLOAD_DIR=/app/data/uploads
-MEDIA_DIR=/app/data/media
-DEBUG=false
-SECRET_KEY=${{ secrets.SECRET_KEY }}
-JWT_SECRET_KEY=${{ secrets.JWT_SECRET_KEY }}
-JWT_ALGORITHM=HS256
-JWT_EXPIRATION_MINUTES=1440
-ADMIN_USERNAME=${{ secrets.ADMIN_USERNAME }}
-ADMIN_PASSWORD=${{ secrets.ADMIN_PASSWORD }}
-ALLOW_REGISTRATION=false
-POSTGRES_USER=${{ secrets.POSTGRES_USER }}
-POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
-POSTGRES_DB=${{ secrets.POSTGRES_DB }}
-REDIS_PASSWORD=${{ secrets.REDIS_PASSWORD }}
-ELASTIC_PASSWORD=${{ secrets.ELASTIC_PASSWORD }}
-GRAFANA_ADMIN_USER=${{ secrets.GRAFANA_ADMIN_USER }}
-GRAFANA_ADMIN_PASSWORD=${{ secrets.GRAFANA_ADMIN_PASSWORD }}
-APP_DOMAIN=${{ env.APP_DOMAIN }}
-LETSENCRYPT_EMAIL=${{ secrets.LETSENCRYPT_EMAIL }}
-NGINX_CONF_FILE=nginx-http.conf
-ALLOWED_ORIGINS=["http://${{ env.HETZNER_HOST }}","http://${{ env.HETZNER_HOST }}:3020","https://${{ env.APP_DOMAIN }}","http://frontend:3000","http://localhost:3000"]
-ALERTMANAGER_WEBHOOK_URL=${{ secrets.ALERTMANAGER_WEBHOOK_URL }}
-ALERTMANAGER_WEBHOOK_USER=${{ secrets.ALERTMANAGER_WEBHOOK_USER }}
-ALERTMANAGER_WEBHOOK_PASSWORD=${{ secrets.ALERTMANAGER_WEBHOOK_PASSWORD }}
-ENVEOF
+            echo "ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}" > .env
+            echo "ANTHROPIC_BASE_URL=${{ secrets.ANTHROPIC_BASE_URL }}" >> .env
+            echo "ANTHROPIC_DIRECT_URL=https://api.anthropic.com" >> .env
+            echo "CLAUDE_MODEL=claude-opus-4-6" >> .env
+            echo "CLAUDE_MODEL_CHAT=claude-opus-4-6" >> .env
+            echo "CLAUDE_MODEL_ANALYSIS=claude-sonnet-4-20250514" >> .env
+            echo "CLAUDE_MODEL_SIMPLE=claude-haiku-4-20250414" >> .env
+            echo "MAX_AGENTS=20" >> .env
+            echo "DATABASE_URL=postgresql+asyncpg://${{ secrets.POSTGRES_USER }}:${{ secrets.POSTGRES_PASSWORD }}@postgres:5432/${{ secrets.POSTGRES_DB }}" >> .env
+            echo "RUN_DB_MIGRATIONS_ON_STARTUP=true" >> .env
+            echo "UPLOAD_DIR=/app/data/uploads" >> .env
+            echo "MEDIA_DIR=/app/data/media" >> .env
+            echo "DEBUG=false" >> .env
+            echo "SECRET_KEY=${{ secrets.SECRET_KEY }}" >> .env
+            echo "JWT_SECRET_KEY=${{ secrets.JWT_SECRET_KEY }}" >> .env
+            echo "JWT_ALGORITHM=HS256" >> .env
+            echo "JWT_EXPIRATION_MINUTES=1440" >> .env
+            echo "ADMIN_USERNAME=${{ secrets.ADMIN_USERNAME }}" >> .env
+            echo "ADMIN_PASSWORD=${{ secrets.ADMIN_PASSWORD }}" >> .env
+            echo "ALLOW_REGISTRATION=false" >> .env
+            echo "POSTGRES_USER=${{ secrets.POSTGRES_USER }}" >> .env
+            echo "POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}" >> .env
+            echo "POSTGRES_DB=${{ secrets.POSTGRES_DB }}" >> .env
+            echo "REDIS_PASSWORD=${{ secrets.REDIS_PASSWORD }}" >> .env
+            echo "ELASTIC_PASSWORD=${{ secrets.ELASTIC_PASSWORD }}" >> .env
+            echo "GRAFANA_ADMIN_USER=${{ secrets.GRAFANA_ADMIN_USER }}" >> .env
+            echo "GRAFANA_ADMIN_PASSWORD=${{ secrets.GRAFANA_ADMIN_PASSWORD }}" >> .env
+            echo "APP_DOMAIN=${{ env.APP_DOMAIN }}" >> .env
+            echo "LETSENCRYPT_EMAIL=${{ secrets.LETSENCRYPT_EMAIL }}" >> .env
+            echo "NGINX_CONF_FILE=nginx-http.conf" >> .env
+            echo 'ALLOWED_ORIGINS=["http://${{ env.HETZNER_HOST }}","http://${{ env.HETZNER_HOST }}:3020","https://${{ env.APP_DOMAIN }}","http://frontend:3000","http://localhost:3000"]' >> .env
+            echo "ALERTMANAGER_WEBHOOK_URL=${{ secrets.ALERTMANAGER_WEBHOOK_URL }}" >> .env
+            echo "ALERTMANAGER_WEBHOOK_USER=${{ secrets.ALERTMANAGER_WEBHOOK_USER }}" >> .env
+            echo "ALERTMANAGER_WEBHOOK_PASSWORD=${{ secrets.ALERTMANAGER_WEBHOOK_PASSWORD }}" >> .env
             echo "Variaveis de ambiente configuradas"
           EOF
 
@@ -380,41 +378,20 @@ ENVEOF
         if: success()
         run: |
           ssh ${{ env.HETZNER_USER }}@${{ env.HETZNER_HOST }} << 'EOF'
-            # Script de backup offsite
-            cat > /opt/whatsapp-insight-transcriber/scripts/backup-offsite.sh << 'SCRIPT'
-#!/bin/sh
-# Backup offsite - copia backups locais para diretorio secundario
-# Pode ser adaptado para rsync remoto, rclone S3/B2, Hetzner Storage Box
-set -eu
-
-BACKUP_DIR="/opt/backups/wit"
-OFFSITE_DIR="/opt/backups/wit-offsite"
-RETENTION_DAYS=14
-
-mkdir -p "$OFFSITE_DIR"
-
-# Copiar backups mais recentes (ultimas 24h) para offsite
-find "$BACKUP_DIR" -name "*.gz" -mtime -1 -exec cp -n {} "$OFFSITE_DIR/" \;
-
-# Limpar offsite antigos
-find "$OFFSITE_DIR" -name "*.gz" -mtime +"$RETENTION_DAYS" -delete 2>/dev/null || true
-
-echo "Backup offsite atualizado: $(ls -la $OFFSITE_DIR/ | wc -l) arquivos"
-
-# ── Para habilitar Hetzner Storage Box, descomente: ──
-# STORAGE_BOX_USER="uXXXXXX"
-# STORAGE_BOX_HOST="uXXXXXX.your-storagebox.de"
-# rsync -avz --delete "$BACKUP_DIR/" "$STORAGE_BOX_USER@$STORAGE_BOX_HOST:./backups/wit/"
-
-# ── Para habilitar rclone (S3/B2/GCS), descomente: ──
-# rclone sync "$BACKUP_DIR/" remote:wit-backups/ --max-age 7d
-SCRIPT
+            cat > /opt/whatsapp-insight-transcriber/scripts/backup-offsite.sh <<'SCRIPT'
+            #!/bin/sh
+            set -eu
+            BACKUP_DIR="/opt/backups/wit"
+            OFFSITE_DIR="/opt/backups/wit-offsite"
+            RETENTION_DAYS=14
+            mkdir -p "$OFFSITE_DIR"
+            find "$BACKUP_DIR" -name "*.gz" -mtime -1 -exec cp -n {} "$OFFSITE_DIR/" \;
+            find "$OFFSITE_DIR" -name "*.gz" -mtime +"$RETENTION_DAYS" -delete 2>/dev/null || true
+            echo "Backup offsite atualizado"
+          SCRIPT
             chmod +x /opt/whatsapp-insight-transcriber/scripts/backup-offsite.sh
-            
-            # Adicionar cron offsite (roda 1h apos o backup local)
             OFFSITE_CRON="0 4 * * * /opt/whatsapp-insight-transcriber/scripts/backup-offsite.sh >> /var/log/wit-backup-offsite.log 2>&1"
             (crontab -l 2>/dev/null | grep -v "backup-offsite" ; echo "$OFFSITE_CRON") | crontab -
-            
             echo "Backup offsite configurado"
           EOF
 
