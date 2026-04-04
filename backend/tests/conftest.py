@@ -29,7 +29,7 @@ from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, Asyn
 from sqlalchemy.pool import StaticPool
 
 from app.models import Base
-from app.auth import create_access_token, hash_password, UserInfo, get_current_user
+from app.auth import create_access_token, hash_password, UserInfo, get_current_user, get_current_user_or_token
 
 
 # ─── Fixture: Engine e DB ────────────────────────────────────────────────────
@@ -93,6 +93,7 @@ async def app(db_engine):
 
     _app.dependency_overrides[get_db] = _override_get_db
     _app.dependency_overrides[get_current_user] = _override_get_current_user
+    _app.dependency_overrides[get_current_user_or_token] = _override_get_current_user
     yield _app
     _app.dependency_overrides.clear()
 
