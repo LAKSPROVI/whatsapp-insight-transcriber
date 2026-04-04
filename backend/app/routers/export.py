@@ -7,6 +7,8 @@ servir arquivos de mídia originais e consultar status dos agentes de IA.
 import os
 import logging
 import tempfile
+import mimetypes
+from urllib.parse import quote
 from pathlib import Path
 from typing import Optional
 
@@ -21,10 +23,40 @@ from app.schemas import ExportRequest
 from app.services.export_service import (
     PDFExporter, DOCXExporter, ExcelExporter, CSVExporter, HTMLExporter, JSONExporter
 )
-from app.auth import get_current_user, UserInfo
+from app.auth import apply_owner_filter, ensure_owner_access, get_current_user, get_current_user_or_token, UserInfo
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["export"])
+
+_MEDIA_TYPE_MAP = {
+    "audio": "audio/mpeg",
+    "video": "video/mp4",
+    "image": "image/jpeg",
+    "document": "application/octet-stream",
+    "sticker": "image/webp",
+}
+
+
+def _build_download_filename(base_name: str, conversation_id: str, date_suffix: str, ext: str) -> str:
+    sanitized = "".join(c for c in base_name if c.isalnum() or c in "._- ").strip().replace(" ", "_")
+    if not sanitized:
+        sanitized = f"transcricao_{conversation_id}_{date_suffix}"
+    if len(sanitized) > 120:
+        sanitized = sanitized[:120].rstrip("._-") or f"transcricao_{conversation_id}_{date_suffix}"
+    return f"{sanitized}.{ext}"
+
+
+def _content_disposition(filename: str) -> str:
+    ascii_name = filename.encode("ascii", errors="ignore").decode("ascii") or "download.bin"
+    return f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(filename)}"
+
+
+def _resolve_media_type(msg: Message, filename: str) -> str:
+    media_type = _MEDIA_TYPE_MAP.get(msg.media_type.value)
+    if media_type:
+        return media_type
+    guessed, _ = mimetypes.guess_type(filename)
+    return guessed or "application/octet-stream"
 
 
 @router.post("/conversations/{conversation_id}/export")
@@ -74,15 +106,32 @@ async def export_conversation(
     - **401 Unauthorized**: Token ausente ou inválido.
     """
     # Buscar conversa
-    stmt = select(Conversation).where(Conversation.id == conversation_id)
+    stmt = apply_owner_filter(
+        select(Conversation).where(Conversation.id == conversation_id),
+        Conversation,
+        current_user,
+    )
     result = await db.execute(stmt)
     conv = result.scalar_one_or_none()
-
-    if not conv:
-        raise HTTPException(404, "Conversa não encontrada")
+    ensure_owner_access(conv, current_user)
 
     if conv.status != ProcessingStatus.COMPLETED:
         raise HTTPException(400, "A conversa ainda está sendo processada")
+
+    # Record custody chain event for export
+    try:
+        from app.services.custody_service import CustodyChainService
+        custody = CustodyChainService(db)
+        await custody.add_event(
+            conversation_id=str(conv.id),
+            event_type="EXPORTED",
+            actor_id=current_user.id,
+            description=f"Conversa exportada no formato {request.format}",
+            evidence={"format": request.format},
+        )
+        await db.commit()
+    except Exception:
+        pass  # Non-blocking
 
     # Buscar mensagens
     msg_stmt = (
@@ -145,23 +194,19 @@ async def export_conversation(
     try:
         exporter = fmt_config["exporter"]()
         file_bytes = exporter.generate(conv, messages, options)
-        filename = f"transcricao_{base_name}_{date_suffix}.{fmt_config['ext']}"
+        filename = _build_download_filename(base_name, conv.id, date_suffix, fmt_config["ext"])
         content_type = fmt_config["content_type"]
-
-        # Sanitizar nome do arquivo
-        filename = "".join(c for c in filename if c.isalnum() or c in "._- ").strip()
-        filename = filename.replace(" ", "_")
 
     except Exception as e:
         logger.error(f"Erro ao gerar exportação ({request.format}): {e}", exc_info=True)
-        raise HTTPException(500, f"Erro ao gerar arquivo: {str(e)}")
+        raise HTTPException(500, "Erro ao gerar arquivo de exportação")
 
     # Retornar diretamente o arquivo
     return Response(
         content=file_bytes,
         media_type=content_type,
         headers={
-            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Disposition": _content_disposition(filename),
             "Content-Length": str(len(file_bytes)),
         },
     )
@@ -172,7 +217,7 @@ async def serve_media(
     conversation_id: str,
     filename: str,
     db: AsyncSession = Depends(get_db),
-    current_user: UserInfo = Depends(get_current_user),
+    current_user: UserInfo = Depends(get_current_user_or_token),
 ):
     """
     Serve arquivos de mídia originais de uma conversa.
@@ -202,14 +247,15 @@ async def serve_media(
     if not conversation_id or ".." in conversation_id or "/" in conversation_id or "\\" in conversation_id:
         raise HTTPException(400, "ID de conversa inválido")
 
-    # Resolver e validar que o caminho fica dentro de MEDIA_DIR
-    media_base = settings.MEDIA_DIR.resolve()
+    conversation_media_base: Optional[Path] = None
 
     def _safe_resolve(candidate: Path) -> Optional[Path]:
-        """Resolve o path e garante que está sob MEDIA_DIR."""
+        """Resolve o path e garante que está sob o diretório extraído da conversa."""
+        if conversation_media_base is None:
+            return None
         resolved = candidate.resolve()
         try:
-            resolved.relative_to(media_base)
+            resolved.relative_to(conversation_media_base)
         except ValueError:
             return None
         if resolved.is_symlink():
@@ -217,6 +263,17 @@ async def serve_media(
         return resolved if resolved.is_file() else None
 
     # Buscar mensagem com este arquivo
+    conv_stmt = apply_owner_filter(
+        select(Conversation).where(Conversation.id == conversation_id),
+        Conversation,
+        current_user,
+    )
+    conv_result = await db.execute(conv_stmt)
+    conv = conv_result.scalar_one_or_none()
+    ensure_owner_access(conv, current_user)
+
+    conversation_media_base = Path(conv.extract_path).resolve()
+
     stmt = (
         select(Message)
         .where(
@@ -228,21 +285,18 @@ async def serve_media(
     msg = result.scalar_one_or_none()
 
     if not msg or not msg.media_path:
-        # Tentar localizar diretamente no diretório de mídia
-        direct_path = settings.MEDIA_DIR / conversation_id / filename
-        safe = _safe_resolve(direct_path)
-        if not safe:
-            raise HTTPException(404, "Arquivo de mídia não encontrado")
-        return FileResponse(str(safe), filename=filename)
+        raise HTTPException(404, "Arquivo de mídia não encontrado")
 
-    # Validar que media_path resolva para dentro de MEDIA_DIR
+    # Validar que media_path resolva para dentro do diretório extraído da conversa
     safe = _safe_resolve(Path(msg.media_path))
-    if not safe:
+    if not safe or safe.name != filename:
         raise HTTPException(404, "Arquivo de mídia não encontrado no servidor")
 
     return FileResponse(
         str(safe),
         filename=filename,
+        media_type=_resolve_media_type(msg, filename),
+        headers={"X-Content-Type-Options": "nosniff"},
     )
 
 
@@ -251,7 +305,7 @@ async def get_media_info(
     conversation_id: str,
     filename: str,
     db: AsyncSession = Depends(get_db),
-    current_user: UserInfo = Depends(get_current_user),
+    current_user: UserInfo = Depends(get_current_user_or_token),
 ):
     """
     Retorna metadados de um arquivo de mídia específico.
@@ -281,6 +335,15 @@ async def get_media_info(
     - **404 Not Found**: Mídia não encontrada.
     - **401 Unauthorized**: Token ausente ou inválido.
     """
+    conv_stmt = apply_owner_filter(
+        select(Conversation).where(Conversation.id == conversation_id),
+        Conversation,
+        current_user,
+    )
+    conv_result = await db.execute(conv_stmt)
+    conv = conv_result.scalar_one_or_none()
+    ensure_owner_access(conv, current_user)
+
     stmt = (
         select(Message)
         .where(
@@ -301,7 +364,7 @@ async def get_media_info(
         "transcription": msg.transcription,
         "description": msg.description,
         "ocr_text": msg.ocr_text,
-        "url": msg.media_url,
+        "url": f"/api/media/{conversation_id}/{filename}",
     }
 
 

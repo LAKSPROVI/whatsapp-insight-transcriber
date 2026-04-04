@@ -4,11 +4,12 @@ import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   ArrowLeft, MessageSquare, BarChart2, FileDown,
-  Search, Loader2, RefreshCw, Users, ChevronDown, Clock, Grid3X3
+  Search, Loader2, RefreshCw, Users, ChevronDown, Clock, Grid3X3, Info,
+  Shield
 } from "lucide-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useConversation, useMessages } from "@/lib/queries";
-import { getMessages } from "@/lib/api";
+import { buildAuthenticatedMediaUrl, getMessages } from "@/lib/api";
 import type { Conversation, Message } from "@/types";
 import { MessageBubble } from "@/components/MessageBubble";
 import { ChatPanel } from "@/components/ChatPanel";
@@ -18,6 +19,9 @@ import { SearchBar } from "@/components/SearchBar";
 import { TimelineView } from "@/components/TimelineView";
 import { ActivityHeatmap } from "@/components/ActivityHeatmap";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { ImageLightbox } from "@/components/ImageLightbox";
+import { MetadataPanel } from "@/components/MetadataPanel";
+import { CustodyPanel } from "@/components/CustodyPanel";
 import { cn, getSentimentEmoji, getSentimentColorHex } from "@/lib/utils";
 
 interface ConversationViewProps {
@@ -25,7 +29,7 @@ interface ConversationViewProps {
   onBack: () => void;
 }
 
-type SidePanel = "none" | "chat" | "analytics" | "export" | "timeline" | "heatmap";
+type SidePanel = "none" | "chat" | "analytics" | "export" | "timeline" | "heatmap" | "metadata" | "custody";
 
 export function ConversationView({ conversationId, onBack }: ConversationViewProps) {
   const [allMessages, setAllMessages] = useState<Message[]>([]);
@@ -35,24 +39,21 @@ export function ConversationView({ conversationId, onBack }: ConversationViewPro
   const [searchQuery, setSearchQuery] = useState("");
   const [filterSender, setFilterSender] = useState<string | null>(null);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
+  const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
+  const [selectedMessage, setSelectedMessage] = useState<Message | null>(null);
+  const [lightboxOpen, setLightboxOpen] = useState(false);
+  const [lightboxIndex, setLightboxIndex] = useState(0);
   const parentRef = useRef<HTMLDivElement>(null);
   const PAGE_SIZE = 100;
 
-  // React Query para dados da conversa
+  // React Query
   const { data: conversation, isLoading: convLoading } = useConversation(conversationId);
-
-  // React Query para primeira página de mensagens
   const { data: initialMessages, isLoading: msgsLoading } = useMessages(
-    conversationId,
-    0,
-    PAGE_SIZE,
-    filterSender || undefined,
-    !!conversationId
+    conversationId, 0, PAGE_SIZE, filterSender || undefined, !!conversationId
   );
 
   const loading = convLoading || msgsLoading;
 
-  // Sincronizar mensagens iniciais
   useEffect(() => {
     if (initialMessages) {
       setAllMessages(initialMessages);
@@ -60,7 +61,6 @@ export function ConversationView({ conversationId, onBack }: ConversationViewPro
     }
   }, [initialMessages]);
 
-  // Reset quando filtro muda
   useEffect(() => {
     setAllMessages([]);
   }, [filterSender]);
@@ -69,13 +69,7 @@ export function ConversationView({ conversationId, onBack }: ConversationViewPro
     if (loadingMore || !hasMore) return;
     setLoadingMore(true);
     try {
-      const msgs = await getMessages(
-        conversationId,
-        allMessages.length,
-        PAGE_SIZE,
-        false,
-        filterSender || undefined
-      );
+      const msgs = await getMessages(conversationId, allMessages.length, PAGE_SIZE, false, filterSender || undefined);
       setAllMessages((prev) => [...prev, ...msgs]);
       setHasMore(msgs.length === PAGE_SIZE);
     } catch (err) {
@@ -84,20 +78,20 @@ export function ConversationView({ conversationId, onBack }: ConversationViewPro
     setLoadingMore(false);
   }, [conversationId, allMessages.length, filterSender, loadingMore, hasMore]);
 
-  // Filtro de busca
+  // Filtered messages
   const filteredMessages = useMemo(() => {
     if (!searchQuery) return allMessages;
-    const searchLower = searchQuery.toLowerCase();
+    const q = searchQuery.toLowerCase();
     return allMessages.filter((m) =>
-      m.original_text?.toLowerCase().includes(searchLower) ||
-      m.transcription?.toLowerCase().includes(searchLower) ||
-      m.description?.toLowerCase().includes(searchLower) ||
-      m.ocr_text?.toLowerCase().includes(searchLower) ||
-      m.sender.toLowerCase().includes(searchLower)
+      m.original_text?.toLowerCase().includes(q) ||
+      m.transcription?.toLowerCase().includes(q) ||
+      m.description?.toLowerCase().includes(q) ||
+      m.ocr_text?.toLowerCase().includes(q) ||
+      m.sender.toLowerCase().includes(q)
     );
   }, [allMessages, searchQuery]);
 
-  // Agrupar mensagens por data para exibição virtual
+  // Group messages by date
   const virtualItems = useMemo(() => {
     const items: Array<{ type: "date"; date: string } | { type: "message"; message: Message }> = [];
     let currentDate = "";
@@ -109,28 +103,80 @@ export function ConversationView({ conversationId, onBack }: ConversationViewPro
           items.push({ type: "date", date: msgDate });
         }
       } catch {
-        if (items.length === 0) {
-          items.push({ type: "date", date: "—" });
-        }
+        if (items.length === 0) items.push({ type: "date", date: "—" });
       }
       items.push({ type: "message", message: msg });
     }
     return items;
   }, [filteredMessages]);
 
+  // Collect images for lightbox
+  const imageMessages = useMemo(() => {
+    return allMessages.filter((m) => m.media_type === "image" && m.media_url);
+  }, [allMessages]);
+
+  const lightboxImages = useMemo(() => {
+    return imageMessages.map((m) => ({
+      src: buildAuthenticatedMediaUrl(m.media_url!),
+      alt: m.description || m.media_filename || "Imagem",
+      filename: m.media_filename,
+      metadata: m.media_metadata,
+      description: m.description,
+      ocrText: m.ocr_text,
+    }));
+  }, [imageMessages]);
+
+  // Handle image click -> open lightbox
+  const handleImageClick = useCallback((messageId: string) => {
+    const idx = imageMessages.findIndex((m) => m.id === messageId);
+    if (idx >= 0) {
+      setLightboxIndex(idx);
+      setLightboxOpen(true);
+    }
+  }, [imageMessages]);
+
+  // Handle metadata click
+  const handleMetadataClick = useCallback((message: Message) => {
+    setSelectedMessage(message);
+    setSidePanel("metadata");
+  }, []);
+
+  // Handle search result click -> scroll to message
+  const handleSearchResultClick = useCallback((messageId: string) => {
+    setHighlightedMessageId(messageId);
+
+    // Find the message in virtualItems
+    const idx = virtualItems.findIndex(
+      (item) => item.type === "message" && item.message.id === messageId
+    );
+
+    if (idx >= 0) {
+      virtualizer.scrollToIndex(idx, { align: "center", behavior: "smooth" });
+    }
+
+    // Clear highlight after animation
+    setTimeout(() => setHighlightedMessageId(null), 3000);
+  }, [virtualItems]);
+
   // Virtualizer
   const virtualizer = useVirtualizer({
-    count: virtualItems.length + (hasMore ? 1 : 0), // +1 for load more button
+    count: virtualItems.length + (hasMore ? 1 : 0),
     getScrollElement: () => parentRef.current,
     estimateSize: (index) => {
-      if (index >= virtualItems.length) return 50; // load more button
+      if (index >= virtualItems.length) return 50;
       const item = virtualItems[index];
-      return item.type === "date" ? 40 : 80;
+      if (item.type === "date") return 40;
+      const msg = item.message;
+      // Better size estimation based on media type
+      if (msg.media_type === "audio") return 160;
+      if (msg.media_type === "video") return 380;
+      if (msg.media_type === "image") return 280;
+      return 80;
     },
     overscan: 20,
   });
 
-  // Detectar scroll position para "scroll to bottom"
+  // Scroll handling
   const handleScroll = useCallback(() => {
     const el = parentRef.current;
     if (!el) return;
@@ -147,12 +193,9 @@ export function ConversationView({ conversationId, onBack }: ConversationViewPro
 
   const scrollToBottom = useCallback(() => {
     const el = parentRef.current;
-    if (el) {
-      el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
-    }
+    if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
   }, []);
 
-  // Auto-scroll quando novas mensagens chegam
   const prevMessageCount = useRef(0);
   useEffect(() => {
     if (allMessages.length > prevMessageCount.current && !showScrollToBottom) {
@@ -177,23 +220,22 @@ export function ConversationView({ conversationId, onBack }: ConversationViewPro
       <div className="flex items-center justify-center h-screen">
         <div className="text-center">
           <p className="text-gray-400">Conversa não encontrada</p>
-          <button onClick={onBack} className="mt-4 text-brand-400 hover:text-brand-300">
-            Voltar
-          </button>
+          <button onClick={onBack} className="mt-4 text-brand-400 hover:text-brand-300">Voltar</button>
         </div>
       </div>
     );
   }
 
+  const activeSidePanel = sidePanel !== "none" && sidePanel !== "chat" && sidePanel !== "metadata";
+
   return (
     <div className="flex h-screen overflow-hidden" role="main">
       {/* Main Content */}
-      <div
-        className={cn(
-          "flex-1 flex flex-col transition-all duration-300",
-          sidePanel !== "none" ? "mr-[400px]" : ""
-        )}
-      >
+      <div className={cn(
+        "flex-1 flex flex-col transition-all duration-300",
+        activeSidePanel ? "mr-[400px]" : "",
+        sidePanel === "metadata" ? "mr-[380px]" : ""
+      )}>
         {/* Header */}
         <header className="glass-dark border-b border-brand-500/10 px-4 py-3 flex items-center gap-3 shrink-0">
           <button
@@ -221,7 +263,6 @@ export function ConversationView({ conversationId, onBack }: ConversationViewPro
                 <span
                   className="flex items-center gap-1"
                   style={{ color: getSentimentColorHex(conversation.sentiment_overall) }}
-                  aria-label={`Sentimento geral: ${conversation.sentiment_overall}`}
                 >
                   {getSentimentEmoji(conversation.sentiment_overall)}
                 </span>
@@ -231,19 +272,19 @@ export function ConversationView({ conversationId, onBack }: ConversationViewPro
 
           {/* Toolbar */}
           <div className="flex items-center gap-2" role="toolbar" aria-label="Ferramentas da conversa">
-            {/* Advanced Search */}
             <SearchBar
               conversationId={conversationId}
               participants={conversation.participants || []}
+              onResultClick={(messageId) => handleSearchResultClick(messageId)}
             />
 
-            {/* Action Buttons */}
             {[
               { id: "analytics" as SidePanel, icon: BarChart2, label: "Análises", color: "accent" },
               { id: "timeline" as SidePanel, icon: Clock, label: "Timeline", color: "brand" },
               { id: "heatmap" as SidePanel, icon: Grid3X3, label: "Heatmap", color: "brand" },
               { id: "chat" as SidePanel, icon: MessageSquare, label: "Chat IA", color: "brand" },
               { id: "export" as SidePanel, icon: FileDown, label: "Exportar", color: "brand" },
+              { id: "custody" as SidePanel, icon: Shield, label: "Custódia", color: "brand" },
             ].map(({ id, icon: Icon, label, color }) => (
               <button
                 key={id}
@@ -276,12 +317,12 @@ export function ConversationView({ conversationId, onBack }: ConversationViewPro
               role="toolbar"
               aria-label="Filtrar mensagens por participante"
             >
-              <span className="text-xs text-gray-500 shrink-0" id="filter-label">Filtrar por:</span>
+              <span className="text-xs text-gray-500 shrink-0">Filtrar por:</span>
               <button
                 onClick={() => setFilterSender(null)}
                 aria-pressed={!filterSender}
                 className={cn(
-                  "px-2.5 py-1 rounded-full text-xs transition-colors shrink-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500",
+                  "px-2.5 py-1 rounded-full text-xs transition-colors shrink-0",
                   !filterSender ? "bg-brand-500/20 text-brand-300" : "text-gray-500 hover:text-gray-300"
                 )}
               >
@@ -293,10 +334,8 @@ export function ConversationView({ conversationId, onBack }: ConversationViewPro
                   onClick={() => setFilterSender(filterSender === p ? null : p)}
                   aria-pressed={filterSender === p}
                   className={cn(
-                    "px-2.5 py-1 rounded-full text-xs transition-colors shrink-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500",
-                    filterSender === p
-                      ? "bg-accent-400/20 text-accent-300"
-                      : "text-gray-500 hover:text-gray-300"
+                    "px-2.5 py-1 rounded-full text-xs transition-colors shrink-0",
+                    filterSender === p ? "bg-accent-400/20 text-accent-300" : "text-gray-500 hover:text-gray-300"
                   )}
                 >
                   {p.split(" ")[0]}
@@ -322,9 +361,7 @@ export function ConversationView({ conversationId, onBack }: ConversationViewPro
             <div className="flex items-center justify-center h-full">
               <div className="text-center text-gray-500">
                 <MessageSquare className="w-12 h-12 mx-auto mb-3 opacity-30" />
-                <p>
-                  {searchQuery ? "Nenhuma mensagem encontrada" : "Sem mensagens para exibir"}
-                </p>
+                <p>{searchQuery ? "Nenhuma mensagem encontrada" : "Sem mensagens para exibir"}</p>
               </div>
             </div>
           ) : (
@@ -338,16 +375,13 @@ export function ConversationView({ conversationId, onBack }: ConversationViewPro
               {virtualizer.getVirtualItems().map((virtualRow) => {
                 const index = virtualRow.index;
 
-                // Load more button
                 if (index >= virtualItems.length) {
                   return (
                     <div
                       key="load-more"
                       style={{
                         position: "absolute",
-                        top: 0,
-                        left: 0,
-                        width: "100%",
+                        top: 0, left: 0, width: "100%",
                         height: `${virtualRow.size}px`,
                         transform: `translateY(${virtualRow.start}px)`,
                       }}
@@ -358,11 +392,7 @@ export function ConversationView({ conversationId, onBack }: ConversationViewPro
                           disabled={loadingMore}
                           className="flex items-center gap-2 px-4 py-2 rounded-xl bg-dark-700 hover:bg-dark-600 text-gray-400 hover:text-gray-200 text-sm transition-all"
                         >
-                          {loadingMore ? (
-                            <Loader2 className="w-4 h-4 animate-spin" />
-                          ) : (
-                            <RefreshCw className="w-4 h-4" />
-                          )}
+                          {loadingMore ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
                           Carregar mais mensagens
                         </button>
                       </div>
@@ -378,9 +408,7 @@ export function ConversationView({ conversationId, onBack }: ConversationViewPro
                       key={`date-${item.date}`}
                       style={{
                         position: "absolute",
-                        top: 0,
-                        left: 0,
-                        width: "100%",
+                        top: 0, left: 0, width: "100%",
                         height: `${virtualRow.size}px`,
                         transform: `translateY(${virtualRow.start}px)`,
                       }}
@@ -401,9 +429,7 @@ export function ConversationView({ conversationId, onBack }: ConversationViewPro
                     key={item.message.id}
                     style={{
                       position: "absolute",
-                      top: 0,
-                      left: 0,
-                      width: "100%",
+                      top: 0, left: 0, width: "100%",
                       transform: `translateY(${virtualRow.start}px)`,
                     }}
                   >
@@ -411,6 +437,9 @@ export function ConversationView({ conversationId, onBack }: ConversationViewPro
                       message={item.message}
                       conversationId={conversationId}
                       participants={conversation.participants || []}
+                      isHighlighted={highlightedMessageId === item.message.id}
+                      onImageClick={handleImageClick}
+                      onMetadataClick={handleMetadataClick}
                     />
                   </div>
                 );
@@ -419,7 +448,7 @@ export function ConversationView({ conversationId, onBack }: ConversationViewPro
           )}
         </div>
 
-        {/* Scroll to bottom indicator */}
+        {/* Scroll to bottom */}
         <AnimatePresence>
           {showScrollToBottom && (
             <motion.button
@@ -428,8 +457,8 @@ export function ConversationView({ conversationId, onBack }: ConversationViewPro
               exit={{ opacity: 0, y: 10 }}
               onClick={scrollToBottom}
               aria-label="Rolar para o final das mensagens"
-              className="absolute bottom-6 right-6 z-20 w-10 h-10 rounded-full bg-brand-500 hover:bg-brand-400 text-white shadow-brand flex items-center justify-center transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
-              style={{ position: "fixed", bottom: 24, right: sidePanel !== "none" ? 424 : 24 }}
+              className="absolute bottom-6 right-6 z-20 w-10 h-10 rounded-full bg-brand-500 hover:bg-brand-400 text-white shadow-brand flex items-center justify-center transition-colors"
+              style={{ position: "fixed", bottom: 24, right: activeSidePanel || sidePanel === "metadata" ? 424 : 24 }}
             >
               <ChevronDown className="w-5 h-5" />
             </motion.button>
@@ -439,7 +468,7 @@ export function ConversationView({ conversationId, onBack }: ConversationViewPro
 
       {/* Side Panels */}
       <AnimatePresence>
-        {sidePanel !== "none" && sidePanel !== "chat" && (
+        {activeSidePanel && (
           <motion.div
             key={sidePanel}
             initial={{ x: 400, opacity: 0 }}
@@ -448,41 +477,36 @@ export function ConversationView({ conversationId, onBack }: ConversationViewPro
             transition={{ type: "spring", damping: 30, stiffness: 300 }}
             className="fixed right-0 top-0 bottom-0 w-[400px] glass-dark border-l border-brand-500/20 z-40 overflow-y-auto"
             role="complementary"
-            aria-label={
-              sidePanel === "analytics" ? "Painel de análises" :
-              sidePanel === "timeline" ? "Timeline da conversa" :
-              sidePanel === "heatmap" ? "Heatmap de atividade" :
-              "Painel de exportação"
-            }
           >
             <div className="p-4">
               {sidePanel === "analytics" && (
-                <ErrorBoundary>
-                  <AnalyticsPanel conversation={conversation} />
-                </ErrorBoundary>
+                <ErrorBoundary><AnalyticsPanel conversation={conversation} /></ErrorBoundary>
               )}
               {sidePanel === "timeline" && (
                 <ErrorBoundary>
-                  <TimelineView
-                    messages={allMessages}
-                    participants={conversation.participants || []}
-                  />
+                  <TimelineView messages={allMessages} participants={conversation.participants || []} />
                 </ErrorBoundary>
               )}
               {sidePanel === "heatmap" && (
-                <ErrorBoundary>
-                  <ActivityHeatmap messages={allMessages} />
-                </ErrorBoundary>
+                <ErrorBoundary><ActivityHeatmap messages={allMessages} /></ErrorBoundary>
               )}
               {sidePanel === "export" && (
-                <ErrorBoundary>
-                  <ExportPanel conversationId={conversationId} />
-                </ErrorBoundary>
+                <ErrorBoundary><ExportPanel conversationId={conversationId} /></ErrorBoundary>
+              )}
+              {sidePanel === "custody" && (
+                <ErrorBoundary><CustodyPanel conversationId={conversationId} /></ErrorBoundary>
               )}
             </div>
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* Metadata Panel */}
+      <MetadataPanel
+        message={selectedMessage}
+        isOpen={sidePanel === "metadata"}
+        onClose={() => setSidePanel("none")}
+      />
 
       {/* Chat Panel */}
       <ErrorBoundary>
@@ -492,6 +516,14 @@ export function ConversationView({ conversationId, onBack }: ConversationViewPro
           onClose={() => setSidePanel("none")}
         />
       </ErrorBoundary>
+
+      {/* Image Lightbox */}
+      <ImageLightbox
+        images={lightboxImages}
+        initialIndex={lightboxIndex}
+        isOpen={lightboxOpen}
+        onClose={() => setLightboxOpen(false)}
+      />
     </div>
   );
 }

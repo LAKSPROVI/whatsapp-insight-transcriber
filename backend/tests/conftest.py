@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 import pytest_asyncio
 
@@ -21,6 +22,7 @@ os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
 os.environ.setdefault("REDIS_URL", "")
 os.environ.setdefault("CACHE_ENABLED", "false")
 os.environ.setdefault("DEBUG", "false")
+os.environ.setdefault("SECRET_KEY", "test-secret-key-for-ci-minimum-32-chars!!")
 
 # Agora importar módulos da app
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
@@ -61,19 +63,18 @@ async def db_session(db_engine):
 
 # ─── Fixture: App e Client ───────────────────────────────────────────────────
 
-@pytest.fixture
-def app(db_engine):
-    """Instância FastAPI configurada para testes, com DB override e lifespan simplificado."""
-    from app.main import app as _app
+@pytest_asyncio.fixture
+async def app(db_engine):
+    """Instância FastAPI isolada para testes, com DB override e lifespan simplificado."""
+    from app.main import create_app
     from app.database import get_db
 
     # Substituir lifespan para evitar startup pesado (ensure_admin_user, orchestrator, redis)
     @asynccontextmanager
-    async def _test_lifespan(app):
+    async def _test_lifespan(_app):
         yield
 
-    _original_lifespan = _app.router.lifespan_context
-    _app.router.lifespan_context = _test_lifespan
+    _app = create_app(lifespan_override=_test_lifespan)
 
     async def _override_get_db():
         session_factory = async_sessionmaker(
@@ -88,20 +89,19 @@ def app(db_engine):
                 raise
 
     async def _override_get_current_user():
-        return UserInfo(username="admin", full_name="Admin", is_admin=True)
+        return UserInfo(id="test-admin-id", username="admin", full_name="Admin", is_admin=True)
 
     _app.dependency_overrides[get_db] = _override_get_db
     _app.dependency_overrides[get_current_user] = _override_get_current_user
     yield _app
     _app.dependency_overrides.clear()
-    _app.router.lifespan_context = _original_lifespan
 
 
-@pytest.fixture
-def client(app):
-    """TestClient síncrono para testes de integração."""
-    from fastapi.testclient import TestClient
-    with TestClient(app, raise_server_exceptions=False) as c:
+@pytest_asyncio.fixture
+async def client(app):
+    """AsyncClient para testes de integração com app ASGI isolada."""
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as c:
         yield c
 
 

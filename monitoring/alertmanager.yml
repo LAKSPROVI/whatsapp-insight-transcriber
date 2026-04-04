@@ -1,0 +1,39 @@
+global:
+  resolve_timeout: 5m
+
+route:
+  group_by: ['alertname', 'severity']
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  receiver: 'webhook-alerts'
+  routes:
+    - match:
+        severity: critical
+      receiver: 'webhook-alerts'
+      repeat_interval: 1h
+    - match:
+        severity: warning
+      receiver: 'webhook-alerts'
+      repeat_interval: 4h
+
+receivers:
+  - name: 'webhook-alerts'
+    webhook_configs:
+      - url: '${ALERTMANAGER_WEBHOOK_URL}'
+        send_resolved: true
+        http_config:
+          basic_auth:
+            username: '${ALERTMANAGER_WEBHOOK_USER}'
+            password: '${ALERTMANAGER_WEBHOOK_PASSWORD}'
+
+# Para usar com email SMTP, descomente abaixo:
+#  - name: 'email-alerts'
+#    email_configs:
+#      - to: '${ALERT_EMAIL_TO}'
+#        from: '${ALERT_EMAIL_FROM}'
+#        smarthost: '${SMTP_HOST}:${SMTP_PORT}'
+#        auth_username: '${SMTP_USER}'
+#        auth_password: '${SMTP_PASSWORD}'
+#        require_tls: true
+#        send_resolved: true

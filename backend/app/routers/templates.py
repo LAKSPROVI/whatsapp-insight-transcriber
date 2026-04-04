@@ -20,6 +20,7 @@ from app.schemas import (
     TemplateAnalysisResponse,
 )
 from app.auth import get_current_user, UserInfo
+from app.auth import apply_owner_filter, ensure_owner_access
 from app.services.analysis_templates import get_all_templates, get_template, get_template_prompts
 from app.dependencies import get_claude_service
 from app.exceptions import ValidationError, ProcessingError
@@ -196,12 +197,14 @@ async def analyze_with_template(
         raise HTTPException(404, f"Template '{template_id}' não encontrado")
 
     # Buscar conversa
-    stmt = select(Conversation).where(Conversation.id == conversation_id)
+    stmt = apply_owner_filter(
+        select(Conversation).where(Conversation.id == conversation_id),
+        Conversation,
+        current_user,
+    )
     result = await db.execute(stmt)
     conv = result.scalar_one_or_none()
-
-    if not conv:
-        raise HTTPException(404, "Conversa não encontrada")
+    ensure_owner_access(conv, current_user)
     if conv.status != ProcessingStatus.COMPLETED:
         raise HTTPException(400, "A conversa ainda está sendo processada")
 

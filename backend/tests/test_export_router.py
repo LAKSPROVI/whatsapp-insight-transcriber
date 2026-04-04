@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession
 from app.models import (
     Conversation, Message, ProcessingStatus, MediaType, SentimentType,
 )
+from app.auth import get_current_user, UserInfo
 
 
 # ─── Helper: seed completed conversation ─────────────────────────────────────
@@ -32,6 +33,7 @@ async def _seed_export_data(db_session: AsyncSession) -> Conversation:
         date_end=datetime(2026, 1, 2, tzinfo=timezone.utc),
         summary="Test summary",
         sentiment_overall=SentimentType.POSITIVE,
+        owner_id="test-admin-id",
     )
     db_session.add(conv)
     await db_session.commit()
@@ -59,6 +61,7 @@ async def _seed_pending_conversation(db_session: AsyncSession) -> Conversation:
         extract_path="/tmp/media/pending",
         status=ProcessingStatus.PROCESSING,
         progress=0.5,
+        owner_id="test-admin-id",
     )
     db_session.add(conv)
     await db_session.commit()
@@ -76,6 +79,19 @@ async def seeded_db(db_engine):
         conv = await _seed_export_data(session)
         pending = await _seed_pending_conversation(session)
     return conv, pending
+
+
+@pytest_asyncio.fixture
+async def non_admin_client(app):
+    import httpx
+
+    async def _user():
+        return UserInfo(id="regular-user-id", username="regular", full_name="Regular User", is_admin=False)
+
+    app.dependency_overrides[get_current_user] = _user
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as c:
+        yield c
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -106,9 +122,9 @@ class TestExportConversation:
         for p in patches:
             p.stop()
 
-    def test_export_csv(self, client, auth_headers, seeded_db):
+    async def test_export_csv(self, client, auth_headers, seeded_db):
         conv, _ = seeded_db
-        resp = client.post(
+        resp = await client.post(
             f"/api/conversations/{conv.id}/export",
             json={"format": "csv"},
             headers=auth_headers,
@@ -117,9 +133,9 @@ class TestExportConversation:
         assert "text/csv" in resp.headers["content-type"]
         assert "attachment" in resp.headers["content-disposition"]
 
-    def test_export_json(self, client, auth_headers, seeded_db):
+    async def test_export_json(self, client, auth_headers, seeded_db):
         conv, _ = seeded_db
-        resp = client.post(
+        resp = await client.post(
             f"/api/conversations/{conv.id}/export",
             json={"format": "json"},
             headers=auth_headers,
@@ -127,9 +143,9 @@ class TestExportConversation:
         assert resp.status_code == 200
         assert "application/json" in resp.headers["content-type"]
 
-    def test_export_html(self, client, auth_headers, seeded_db):
+    async def test_export_html(self, client, auth_headers, seeded_db):
         conv, _ = seeded_db
-        resp = client.post(
+        resp = await client.post(
             f"/api/conversations/{conv.id}/export",
             json={"format": "html"},
             headers=auth_headers,
@@ -137,9 +153,9 @@ class TestExportConversation:
         assert resp.status_code == 200
         assert "text/html" in resp.headers["content-type"]
 
-    def test_export_pdf(self, client, auth_headers, seeded_db):
+    async def test_export_pdf(self, client, auth_headers, seeded_db):
         conv, _ = seeded_db
-        resp = client.post(
+        resp = await client.post(
             f"/api/conversations/{conv.id}/export",
             json={"format": "pdf"},
             headers=auth_headers,
@@ -147,55 +163,63 @@ class TestExportConversation:
         assert resp.status_code == 200
         assert "application/pdf" in resp.headers["content-type"]
 
-    def test_export_docx(self, client, auth_headers, seeded_db):
+    async def test_export_docx(self, client, auth_headers, seeded_db):
         conv, _ = seeded_db
-        resp = client.post(
+        resp = await client.post(
             f"/api/conversations/{conv.id}/export",
             json={"format": "docx"},
             headers=auth_headers,
         )
         assert resp.status_code == 200
 
-    def test_export_nonexistent_conversation_returns_404(self, client, auth_headers):
-        resp = client.post(
+    async def test_export_nonexistent_conversation_returns_404(self, client, auth_headers):
+        resp = await client.post(
             "/api/conversations/nonexistent-id-999/export",
             json={"format": "csv"},
             headers=auth_headers,
         )
         assert resp.status_code == 404
 
-    def test_export_non_completed_conversation_returns_400(
+    async def test_export_non_completed_conversation_returns_400(
         self, client, auth_headers, seeded_db
     ):
         _, pending = seeded_db
-        resp = client.post(
+        resp = await client.post(
             f"/api/conversations/{pending.id}/export",
             json={"format": "csv"},
             headers=auth_headers,
         )
         assert resp.status_code == 400
 
-    def test_export_invalid_format_returns_422(self, client, auth_headers, seeded_db):
+    async def test_export_invalid_format_returns_422(self, client, auth_headers, seeded_db):
         conv, _ = seeded_db
-        resp = client.post(
+        resp = await client.post(
             f"/api/conversations/{conv.id}/export",
             json={"format": "invalid_fmt"},
             headers=auth_headers,
         )
         assert resp.status_code == 422
 
-    def test_export_unauthorized_returns_403(self, app, seeded_db):
-        from app.auth import get_current_user
+    async def test_export_unauthorized_returns_403(self, app, seeded_db):
         app.dependency_overrides.pop(get_current_user, None)
-        from fastapi.testclient import TestClient
+        import httpx
         conv, _ = seeded_db
-        with TestClient(app, raise_server_exceptions=False) as c:
-            resp = c.post(
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as c:
+            resp = await c.post(
                 f"/api/conversations/{conv.id}/export",
                 json={"format": "csv"},
             )
             # 401 or 403 depending on auth implementation
             assert resp.status_code in (401, 403)
+
+    async def test_export_hidden_when_not_owner(self, non_admin_client, seeded_db):
+        conv, _ = seeded_db
+        resp = await non_admin_client.post(
+            f"/api/conversations/{conv.id}/export",
+            json={"format": "csv"},
+        )
+        assert resp.status_code == 404
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -205,39 +229,48 @@ class TestExportConversation:
 class TestMediaEndpoints:
     """GET /api/media/{conv_id}/{filename} and /info"""
 
-    def test_media_nonexistent_returns_404(self, client, auth_headers, seeded_db):
+    async def test_media_nonexistent_returns_404(self, client, auth_headers, seeded_db):
         conv, _ = seeded_db
-        resp = client.get(
+        resp = await client.get(
             f"/api/media/{conv.id}/nonexistent_file.opus",
             headers=auth_headers,
         )
         assert resp.status_code == 404
 
-    def test_media_path_traversal_returns_400(self, client, auth_headers, seeded_db):
+    async def test_media_path_traversal_returns_400(self, client, auth_headers, seeded_db):
         conv, _ = seeded_db
-        resp = client.get(
+        resp = await client.get(
             f"/api/media/{conv.id}/..%2F..%2Fetc%2Fpasswd",
             headers=auth_headers,
         )
-        # The router checks for ".." in filename; may return 400 or 404
-        assert resp.status_code in (400, 404)
+        assert resp.status_code == 400
 
-    def test_media_info_nonexistent_returns_404(self, client, auth_headers, seeded_db):
+    async def test_media_info_nonexistent_returns_404(self, client, auth_headers, seeded_db):
         conv, _ = seeded_db
-        resp = client.get(
+        resp = await client.get(
             f"/api/media/{conv.id}/nonexistent_file.opus/info",
             headers=auth_headers,
         )
         assert resp.status_code == 404
 
-    def test_media_unauthorized(self, app, seeded_db):
-        from app.auth import get_current_user
+    async def test_media_unauthorized(self, app, seeded_db):
         app.dependency_overrides.pop(get_current_user, None)
-        from fastapi.testclient import TestClient
+        import httpx
         conv, _ = seeded_db
-        with TestClient(app, raise_server_exceptions=False) as c:
-            resp = c.get(f"/api/media/{conv.id}/file.opus")
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as c:
+            resp = await c.get(f"/api/media/{conv.id}/file.opus")
             assert resp.status_code in (401, 403)
+
+    async def test_media_hidden_when_not_owner(self, non_admin_client, seeded_db):
+        conv, _ = seeded_db
+        resp = await non_admin_client.get(f"/api/media/{conv.id}/file.opus")
+        assert resp.status_code == 404
+
+    async def test_media_info_hidden_when_not_owner(self, non_admin_client, seeded_db):
+        conv, _ = seeded_db
+        resp = await non_admin_client.get(f"/api/media/{conv.id}/file.opus/info")
+        assert resp.status_code == 404
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -247,17 +280,17 @@ class TestMediaEndpoints:
 class TestAgentsStatus:
     """GET /api/agents/status"""
 
-    def test_agents_status_returns_response(self, client, auth_headers):
-        resp = client.get("/api/agents/status", headers=auth_headers)
+    async def test_agents_status_returns_response(self, client, auth_headers):
+        resp = await client.get("/api/agents/status", headers=auth_headers)
         assert resp.status_code == 200
         data = resp.json()
         # Even without orchestrator, it should return a message
         assert isinstance(data, dict)
 
-    def test_agents_status_unauthorized(self, app):
-        from app.auth import get_current_user
+    async def test_agents_status_unauthorized(self, app):
         app.dependency_overrides.pop(get_current_user, None)
-        from fastapi.testclient import TestClient
-        with TestClient(app, raise_server_exceptions=False) as c:
-            resp = c.get("/api/agents/status")
+        import httpx
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as c:
+            resp = await c.get("/api/agents/status")
             assert resp.status_code in (401, 403)

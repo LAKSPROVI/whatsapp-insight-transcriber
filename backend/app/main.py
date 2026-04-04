@@ -11,7 +11,7 @@ from collections import defaultdict
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
@@ -20,12 +20,18 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from app.config import settings, validate_settings
 try:
     from app.metrics import setup_instrumentator
-except ImportError:
+except ImportError as exc:
+    logging.getLogger(__name__).warning("Metrics module unavailable: %s", exc)
     setup_instrumentator = None
 from app.database import bootstrap_db
 from app.dependencies import get_orchestrator, shutdown_orchestrator
 from app.routers import conversations, chat, export, auth, search, templates
 from app.routers.ws import router as ws_router
+from app.routers.custody import router as custody_router
+from app.routers.tags import router as tags_router
+from app.routers.lgpd import router as lgpd_router
+from app.routers.dashboard import router as dashboard_router
+from app.auth import get_current_user, UserInfo
 from app.logging import setup_logging, get_logger, RequestTracingMiddleware
 from app.logging.error_advisor import get_error_suggestion
 from app.exceptions import (
@@ -136,10 +142,33 @@ async def lifespan(app: FastAPI):
     else:
         logger.warning("⚠️ Cache Redis indisponível — aplicação funcionará sem cache")
 
+    # Agendar purge periódica de dados expirados (LGPD data retention)
+    async def _periodic_data_purge():
+        import asyncio
+        from app.services.data_retention import purge_expired_conversations
+        from app.database import AsyncSessionLocal
+        while True:
+            try:
+                await asyncio.sleep(3600 * 6)  # A cada 6 horas
+                async with AsyncSessionLocal() as db:
+                    await purge_expired_conversations(db)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Erro na purge periódica: {e}")
+
+    import asyncio
+    _purge_task = asyncio.create_task(_periodic_data_purge())
+
     yield
 
     # Cleanup
     logger.info("🛑 Encerrando serviços...")
+    _purge_task.cancel()
+    try:
+        await _purge_task
+    except asyncio.CancelledError:
+        pass
     await close_redis()
     await shutdown_orchestrator()
     logger.info("✅ Aplicação encerrada")
@@ -177,11 +206,7 @@ tags_metadata = [
     },
 ]
 
-# ─── App ──────────────────────────────────────────────────────────────────────
-app = FastAPI(
-    title=settings.APP_NAME,
-    version=settings.APP_VERSION,
-    description="""
+APP_DESCRIPTION = """
 ## WhatsApp Insight Transcriber API
 
 Plataforma avançada de transcrição e análise de conversas do WhatsApp com IA.
@@ -216,55 +241,62 @@ Todos os endpoints (exceto health check) requerem autenticação via **JWT Beare
 4. **Explorar** → `GET /api/conversations/{id}`, `GET /api/chat/{id}/analytics`
 5. **Chat IA** → `POST /api/chat/{id}/message`
 6. **Exportar** → `POST /api/conversations/{id}/export`
-""",
-    contact={
-        "name": "WhatsApp Insight Transcriber",
-        "url": "https://github.com/whatsapp-insight-transcriber",
-        "email": "suporte@whatsapp-insight.com",
-    },
-    license_info={
-        "name": "MIT License",
-        "url": "https://opensource.org/licenses/MIT",
-    },
-    openapi_tags=tags_metadata,
-    lifespan=lifespan,
-    docs_url="/api/docs",
-    redoc_url="/api/redoc",
-)
-
-# ─── Middleware ────────────────────────────────────────────────────────────────
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=settings.ALLOWED_ORIGINS,
-    allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "Accept", "X-Requested-With"],
-    expose_headers=["Content-Disposition", "Content-Length"],
-    max_age=600,
-)
-app.add_middleware(GZipMiddleware, minimum_size=1000)
-app.add_middleware(RateLimitMiddleware)
-app.add_middleware(RequestTracingMiddleware)
-
-# ─── Prometheus Metrics ───────────────────────────────────────────────────────
-instrumentator = setup_instrumentator() if setup_instrumentator else None
-if instrumentator is not None:
-    instrumentator.instrument(app)
+"""
 
 
-@app.on_event("startup")
-async def _startup():
+def create_app(*, lifespan_override=None) -> FastAPI:
+    app = FastAPI(
+        title=settings.APP_NAME,
+        version=settings.APP_VERSION,
+        description=APP_DESCRIPTION,
+        contact={
+            "name": "WhatsApp Insight Transcriber",
+            "url": "https://github.com/whatsapp-insight-transcriber",
+            "email": "suporte@whatsapp-insight.com",
+        },
+        license_info={
+            "name": "MIT License",
+            "url": "https://opensource.org/licenses/MIT",
+        },
+        openapi_tags=tags_metadata,
+        lifespan=lifespan_override or lifespan,
+        docs_url="/api/docs",
+        redoc_url="/api/redoc",
+    )
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.ALLOWED_ORIGINS,
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type", "Accept", "X-Requested-With"],
+        expose_headers=["Content-Disposition", "Content-Length"],
+        max_age=600,
+    )
+    app.add_middleware(GZipMiddleware, minimum_size=1000)
+    app.add_middleware(RateLimitMiddleware)
+    app.add_middleware(RequestTracingMiddleware)
+
+    instrumentator = setup_instrumentator() if (setup_instrumentator and settings.ENABLE_METRICS) else None
     if instrumentator is not None:
-        instrumentator.expose(app, endpoint="/metrics", include_in_schema=False)
+        instrumentator.instrument(app).expose(app, endpoint="/metrics", include_in_schema=False)
 
-# ─── Routers ──────────────────────────────────────────────────────────────────
-app.include_router(auth.router, prefix="/api")
-app.include_router(conversations.router, prefix="/api")
-app.include_router(chat.router, prefix="/api")
-app.include_router(export.router, prefix="/api")
-app.include_router(search.router, prefix="/api")
-app.include_router(templates.router, prefix="/api")
-app.include_router(ws_router, prefix="/api")
+    app.include_router(auth.router, prefix="/api")
+    app.include_router(conversations.router, prefix="/api")
+    app.include_router(chat.router, prefix="/api")
+    app.include_router(export.router, prefix="/api")
+    app.include_router(search.router, prefix="/api")
+    app.include_router(templates.router, prefix="/api")
+    app.include_router(ws_router, prefix="/api")
+    app.include_router(custody_router, prefix="/api")
+    app.include_router(tags_router, prefix="/api")
+    app.include_router(lgpd_router, prefix="/api")
+    app.include_router(dashboard_router, prefix="/api")
+    return app
+
+
+# ─── App ──────────────────────────────────────────────────────────────────────
+app = create_app()
 
 
 # ─── Exception Handlers ──────────────────────────────────────────────────────
@@ -352,21 +384,21 @@ async def health_check():
 
 
 @app.get("/api/cache/stats", tags=["health"])
-async def cache_stats():
+async def cache_stats(current_user: UserInfo = Depends(get_current_user)):
     """
     Retorna estatísticas detalhadas do cache Redis.
 
     Inclui taxa de acerto (hit rate), número de chaves armazenadas,
     uso de memória e estado da conexão.
 
-    **Não requer autenticação.**
+    **Requer autenticação via JWT Bearer Token.**
     """
     from app.services.cache_service import get_cache_stats
     return await get_cache_stats()
 
 
 @app.get("/api/health/detailed", tags=["health"])
-async def detailed_health_check():
+async def detailed_health_check(current_user: UserInfo = Depends(get_current_user)):
     """
     Health check detalhado com verificações de infraestrutura.
 

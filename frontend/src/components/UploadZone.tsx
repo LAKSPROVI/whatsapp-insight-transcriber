@@ -15,6 +15,8 @@ export function UploadZone({ onUpload, isUploading = false }: UploadZoneProps) {
   const [isDragActive, setIsDragActive] = useState(false);
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [consentChecked, setConsentChecked] = useState(false);
+  const [showPrivacyPolicy, setShowPrivacyPolicy] = useState(false);
 
   const onDrop = useCallback(
     (acceptedFiles: File[], rejectedFiles: FileRejection[]) => {
@@ -35,11 +37,15 @@ export function UploadZone({ onUpload, isUploading = false }: UploadZoneProps) {
 
       if (acceptedFiles.length > 0) {
         const file = acceptedFiles[0];
+        if (!consentChecked) {
+          setError("Voce deve aceitar a Politica de Privacidade e consentir com o processamento antes de fazer upload.");
+          return;
+        }
         setUploadedFile(file);
         onUpload(file);
       }
     },
-    [onUpload]
+    [onUpload, consentChecked]
   );
 
   const { getRootProps, getInputProps } = useDropzone({
@@ -213,6 +219,89 @@ export function UploadZone({ onUpload, isUploading = false }: UploadZoneProps) {
           )}
         </AnimatePresence>
       </motion.div>
+
+      {/* LGPD Consent Checkbox */}
+      <div className="mt-4 space-y-3">
+        <label className="flex items-start gap-3 cursor-pointer group">
+          <input
+            type="checkbox"
+            checked={consentChecked}
+            onChange={(e) => {
+              setConsentChecked(e.target.checked);
+              if (e.target.checked) setError(null);
+            }}
+            className="mt-1 w-4 h-4 rounded border-brand-500/40 bg-dark-700 text-brand-500 focus:ring-brand-500 focus:ring-offset-0"
+            aria-label="Aceitar Politica de Privacidade e consentir com o processamento"
+          />
+          <span className="text-sm text-gray-400 group-hover:text-gray-300 transition-colors">
+            Declaro que li e aceito a{" "}
+            <button
+              type="button"
+              onClick={(e) => {
+                e.preventDefault();
+                setShowPrivacyPolicy(true);
+              }}
+              className="text-brand-400 underline underline-offset-2 hover:text-brand-300"
+            >
+              Politica de Privacidade
+            </button>
+            {" "}e consinto com o processamento dos dados enviados por inteligencia artificial,
+            incluindo a transferencia internacional para a API Anthropic (EUA) com redacao previa de
+            dados pessoais identificaveis (PII), conforme a LGPD (Lei 13.709/2018).
+          </span>
+        </label>
+
+        <p className="text-xs text-gray-500 pl-7">
+          Seus dados serao retidos por no maximo 90 dias e voce pode solicitar exclusao a qualquer momento.
+        </p>
+      </div>
+
+      {/* Privacy Policy Modal */}
+      <AnimatePresence>
+        {showPrivacyPolicy && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
+            onClick={() => setShowPrivacyPolicy(false)}
+          >
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              onClick={(e: React.MouseEvent) => e.stopPropagation()}
+              className="bg-dark-800 border border-brand-500/20 rounded-2xl p-6 max-w-2xl w-full max-h-[80vh] overflow-y-auto"
+            >
+              <h2 className="text-xl font-bold text-white mb-4">Politica de Privacidade</h2>
+              <div className="text-sm text-gray-300 space-y-3">
+                <p><strong>1. CONTROLADOR DOS DADOS</strong></p>
+                <p>O controlador responsavel pelo tratamento dos seus dados pessoais e o operador da plataforma WhatsApp Insight Transcriber.</p>
+                <p><strong>2. DADOS COLETADOS</strong></p>
+                <p>Dados de cadastro, conversas do WhatsApp (textos, audios, imagens, videos), dados de uso e dados gerados pela IA.</p>
+                <p><strong>3. BASE LEGAL</strong></p>
+                <p>Consentimento explicito do usuario (Art. 7, I, LGPD).</p>
+                <p><strong>4. TRANSFERENCIA INTERNACIONAL</strong></p>
+                <p>Textos sao enviados a API Anthropic (EUA). PII e redactado antes do envio.</p>
+                <p><strong>5. RETENCAO</strong></p>
+                <p>Conversas retidas por no maximo 90 dias.</p>
+                <p><strong>6. SEUS DIREITOS (Art. 18 LGPD)</strong></p>
+                <p>Acessar, corrigir, excluir dados. Revogar consentimento. Portabilidade.</p>
+                <p><strong>7. SEGURANCA</strong></p>
+                <p>TLS/HTTPS, JWT, RBAC, cadeia de custodia, redacao PII, backups.</p>
+                <p><strong>8. CONTATO DPO</strong></p>
+                <p>dpo@whatsapp-insight.com</p>
+              </div>
+              <button
+                onClick={() => setShowPrivacyPolicy(false)}
+                className="mt-6 w-full py-2 bg-brand-500 hover:bg-brand-600 text-white rounded-lg transition-colors"
+              >
+                Fechar
+              </button>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

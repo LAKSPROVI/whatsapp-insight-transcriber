@@ -1,0 +1,57 @@
+groups:
+  - name: wit_alerts
+    rules:
+      - alert: HighErrorRate
+        expr: |
+          sum(rate(http_requests_total{job="wit-backend",status=~"5.."}[5m]))
+          /
+          clamp_min(sum(rate(http_requests_total{job="wit-backend"}[5m])), 0.001)
+          > 0.05
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "High error rate detected"
+          description: "Error rate is above 5% for 5 minutes"
+
+      - alert: APIDown
+        expr: up{job="wit-backend"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "WIT Backend is down"
+
+      - alert: HighLatencyP99
+        expr: |
+          histogram_quantile(
+            0.99,
+            sum by (le) (
+              rate(http_request_duration_seconds_bucket{job="wit-backend"}[5m])
+            )
+          ) > 5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High API latency (p99 > 5s)"
+
+      - alert: DiskSpaceLow
+        expr: |
+          node_filesystem_avail_bytes{job="node-exporter",mountpoint="/",fstype!~"tmpfs|overlay|squashfs"}
+          /
+          node_filesystem_size_bytes{job="node-exporter",mountpoint="/",fstype!~"tmpfs|overlay|squashfs"}
+          < 0.1
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Disk space below 10%"
+
+      - alert: HighMemoryUsage
+        expr: process_resident_memory_bytes{job="wit-backend"} / (2 * 1024 * 1024 * 1024) > 0.9
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Backend process memory usage above 90%"

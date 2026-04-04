@@ -19,6 +19,11 @@ passlib[bcrypt]>=1.7.4
 bcrypt==4.2.1
 redis[hiredis]>=5.0.0
 structlog>=24.0.0
+alembic>=1.13.0
+prometheus-fastapi-instrumentator>=7.0.0
+prometheus-client>=0.21.0
+sentry-sdk[fastapi]>=2.0.0
+pgvector>=0.3.0
 
 # ─── Dependências de Desenvolvimento/Teste ─────────────────────
 pytest>=8.0.0

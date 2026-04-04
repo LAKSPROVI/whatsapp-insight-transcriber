@@ -95,11 +95,8 @@ def run_migrations() -> None:
 async def bootstrap_db() -> str:
     """Inicializa o schema preferindo migrações versionadas quando habilitadas."""
     if _should_run_migrations_on_startup():
-        try:
-            await asyncio.to_thread(run_migrations)
-            return "migrations"
-        except Exception as e:
-            logger.warning("Falling back to create_all after migration bootstrap failure: %s", e)
+        await asyncio.to_thread(run_migrations)
+        return "migrations"
 
     await init_db()
     return "create_all"

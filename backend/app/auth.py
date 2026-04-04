@@ -4,9 +4,9 @@ Persistência em banco de dados SQLAlchemy.
 """
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Optional, Any
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Query, Request, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from jose import JWTError, jwt
 from passlib.context import CryptContext
@@ -97,9 +97,11 @@ class TokenResponse(BaseModel):
 
 
 class UserInfo(BaseModel):
+    id: str
     username: str
     full_name: str = ""
     is_admin: bool = False
+    role: str = "analyst"  # viewer, analyst, auditor, admin
 
 
 class UserDetail(BaseModel):
@@ -188,7 +190,7 @@ async def create_user(
     password: str,
     full_name: str = "",
     is_admin: bool = False,
-) -> "User":
+):
     """Cria um novo usuário no banco de dados."""
     from app.models import User
     user = User(
@@ -289,10 +291,69 @@ async def get_current_user(
             )
 
         return UserInfo(
+            id=user.id,
             username=user.username,
             full_name=user.full_name or "",
             is_admin=user.is_admin,
+            role=getattr(user, "role", "analyst") if hasattr(user, "role") else ("admin" if user.is_admin else "analyst"),
         )
+
+
+async def get_current_user_from_token(token: str) -> UserInfo:
+    """Resolve usuário a partir de token bearer bruto."""
+    payload = verify_token(token)
+
+    if payload is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token inválido ou expirado",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    username: Optional[str] = payload.get("sub")
+    if username is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token inválido: sem identificação de usuário",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    async with AsyncSessionLocal() as session:
+        user = await get_user_by_username(session, username)
+        if user is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Usuário não encontrado",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        if not user.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Usuário desativado. Contate o administrador.",
+            )
+
+        return UserInfo(
+            id=user.id,
+            username=user.username,
+            full_name=user.full_name or "",
+            is_admin=user.is_admin,
+            role=getattr(user, "role", "analyst") if hasattr(user, "role") else ("admin" if user.is_admin else "analyst"),
+        )
+
+
+async def get_current_user_or_token(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(HTTPBearer(auto_error=False)),
+    token: Optional[str] = Query(default=None),
+) -> UserInfo:
+    """Aceita Bearer header ou token em query string para recursos de mídia."""
+    raw_token = credentials.credentials if credentials is not None else token
+    if not raw_token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token ausente",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return await get_current_user_from_token(raw_token)
 
 
 async def get_current_admin(
@@ -305,3 +366,92 @@ async def get_current_admin(
             detail="Acesso restrito a administradores",
         )
     return current_user
+
+
+def require_role(*allowed_roles: str):
+    """Factory de dependency que exige role especifica.
+    
+    Uso: Depends(require_role("auditor", "admin"))
+    """
+    async def _check_role(current_user: UserInfo = Depends(get_current_user)) -> UserInfo:
+        if current_user.is_admin:
+            return current_user
+        if current_user.role not in allowed_roles:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Acesso restrito. Roles permitidas: {', '.join(allowed_roles)}",
+            )
+        return current_user
+    return _check_role
+
+
+def apply_owner_filter(stmt, model, current_user: UserInfo):
+    """Aplica filtro por owner para usuários não-admin."""
+    if current_user.is_admin:
+        return stmt
+    return stmt.where(model.owner_id == current_user.id)
+
+
+def ensure_owner_access(resource, current_user: UserInfo) -> None:
+    """Valida se o recurso pertence ao usuário atual quando ele não é admin."""
+    if resource is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Recurso não encontrado")
+    owner_id = getattr(resource, "owner_id", None)
+    if not current_user.is_admin and owner_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Recurso não encontrado")
+
+
+async def log_audit_event(
+    session: AsyncSession,
+    *,
+    action: str,
+    current_user: Optional[UserInfo] = None,
+    resource_type: Optional[str] = None,
+    resource_id: Optional[str] = None,
+    details: Optional[dict[str, Any]] = None,
+    request: Optional[Request] = None,
+) -> None:
+    from app.models import AuditLog
+    from sqlalchemy import select, desc
+    import hashlib, json
+
+    user_agent = None
+    ip_address = None
+    if request:
+        ip_address = request.client.host if request.client else None
+        user_agent = request.headers.get("user-agent", "")[:500] if request.headers else None
+
+    # Hash-chained audit: find prev_hash from last entry
+    prev_hash = "0" * 64
+    try:
+        last_stmt = select(AuditLog.event_hash).order_by(desc(AuditLog.created_at)).limit(1)
+        last_result = await session.execute(last_stmt)
+        last_hash = last_result.scalar_one_or_none()
+        if last_hash:
+            prev_hash = last_hash
+    except Exception:
+        pass  # First entry or table not migrated yet
+
+    # Compute event hash
+    event_data = json.dumps({
+        "action": action,
+        "user_id": current_user.id if current_user else None,
+        "resource_type": resource_type,
+        "resource_id": resource_id,
+        "prev_hash": prev_hash,
+    }, sort_keys=True)
+    event_hash = hashlib.sha256(event_data.encode()).hexdigest()
+
+    session.add(
+        AuditLog(
+            user_id=current_user.id if current_user else None,
+            action=action,
+            resource_type=resource_type,
+            resource_id=resource_id,
+            details=details,
+            ip_address=ip_address,
+            user_agent=user_agent,
+            prev_hash=prev_hash,
+            event_hash=event_hash,
+        )
+    )

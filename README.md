@@ -11,6 +11,7 @@
 - [Arquitetura Técnica](#arquitetura-técnica)
 - [Funcionalidades](#funcionalidades)
 - [Instalação Rápida](#instalação-rápida)
+- [Deploy](#deploy)
 - [Configuração](#configuração)
 - [Como Usar](#como-usar)
 - [Estrutura do Projeto](#estrutura-do-projeto)
@@ -190,6 +191,20 @@ docker-compose up -d
 docker-compose logs -f
 ```
 
+## Deploy
+
+### Deploy recorrente via GitHub Actions
+
+O projeto esta preparado para deploy automatizado no ambiente `production` por meio do workflow `/.github/workflows/deploy.yml`.
+
+- Configure os secrets do ambiente `production` no GitHub
+- Use `push` para `main` ou `workflow_dispatch`
+- Nao armazene tokens, chaves privadas ou segredos no repositorio
+
+Documentacao operacional:
+
+- `docs/DEPLOY_GITHUB.md`
+
 ---
 
 ## ⚙️ Configuração
@@ -202,7 +217,7 @@ docker-compose logs -f
 | `ANTHROPIC_BASE_URL` | `http://localhost:1337` | URL do proxy gameron |
 | `CLAUDE_MODEL` | `claude-opus-4-6` | Modelo Claude a utilizar |
 | `MAX_AGENTS` | `20` | Número de agentes paralelos |
-| `MAX_UPLOAD_SIZE` | `524288000` | Tamanho máximo de upload (bytes) |
+| `MAX_UPLOAD_SIZE` | `524288000` | Tamanho máximo de upload (bytes, 500MB) |
 | `DATABASE_URL` | SQLite | URL do banco de dados |
 | `UPLOAD_DIR` | `uploads/` | Diretório de uploads |
 | `MEDIA_DIR` | `media/` | Diretório de mídias extraídas |

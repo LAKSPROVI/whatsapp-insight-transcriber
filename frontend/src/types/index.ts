@@ -197,7 +197,7 @@ export interface OrchestratorStatus {
 // ─── Export ───────────────────────────────────────────────────────────────────
 
 export interface ExportOptions {
-  format: "pdf" | "docx";
+  format: "pdf" | "docx" | "xlsx" | "csv" | "html" | "json";
   include_media_descriptions: boolean;
   include_sentiment_analysis: boolean;
   include_summary: boolean;

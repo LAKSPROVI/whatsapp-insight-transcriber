@@ -46,6 +46,12 @@ def _escape_like(value: str) -> str:
     return value.replace("%", "\\%").replace("_", "\\_")
 
 
+def _apply_owner_visibility(stmt, current_user: UserInfo):
+    if current_user.is_admin:
+        return stmt
+    return stmt.where(Conversation.owner_id == current_user.id)
+
+
 def _highlight(text: str, query: str, is_regex: bool = False) -> str:
     """Adiciona marcações de highlight nos trechos encontrados."""
     if not text or not query:
@@ -186,6 +192,7 @@ async def search_messages(
         .join(Conversation, Message.conversation_id == Conversation.id)
         .where(Conversation.status == ProcessingStatus.COMPLETED)
     )
+    stmt = _apply_owner_visibility(stmt, current_user)
 
     # Filtros
     if conversation_id:
@@ -327,7 +334,8 @@ async def search_conversations(
         extra={"query": q, "user": current_user.username},
     )
 
-    like_pattern = f"%{q}%"
+    safe_q = _escape_like(q)
+    like_pattern = f"%{safe_q}%"
     stmt = (
         select(Conversation)
         .where(
@@ -336,6 +344,7 @@ async def search_conversations(
         )
         .order_by(Conversation.created_at.desc())
     )
+    stmt = _apply_owner_visibility(stmt, current_user)
 
     result = await db.execute(stmt)
     conversations = result.scalars().all()
@@ -371,3 +380,29 @@ async def search_conversations(
         total=len(items),
         results=items,
     )
+
+
+# ── Semantic Search (pgvector) ───────────────────────────────────────
+
+@router.get("/semantic")
+async def semantic_search(
+    q: str = Query(..., min_length=2, max_length=500),
+    conversation_id: str = Query(...),
+    limit: int = Query(default=10, ge=1, le=50),
+    db: AsyncSession = Depends(get_db),
+    current_user: UserInfo = Depends(get_current_user),
+):
+    """
+    Busca sem\u00e2ntica usando pgvector (similaridade de cosseno).
+    Fallback para ILIKE se pgvector n\u00e3o dispon\u00edvel.
+    """
+    from app.services.semantic_search import get_semantic_search_service
+
+    service = get_semantic_search_service()
+    results = await service.search(db, conversation_id, q, limit)
+    return {
+        "query": q,
+        "conversation_id": conversation_id,
+        "total": len(results),
+        "results": results,
+    }

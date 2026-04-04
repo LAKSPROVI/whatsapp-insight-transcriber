@@ -91,3 +91,8 @@ htmlcov/
 *.tmp
 *.bak
 frontend/tsconfig.tsbuildinfo
+tmp_upload/
+*output.txt
+*test_results.txt
+nul
+backend/nul

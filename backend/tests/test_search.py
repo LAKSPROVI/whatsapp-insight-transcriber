@@ -3,78 +3,65 @@ Testes para o router de pesquisa (search).
 """
 import pytest
 import pytest_asyncio
+import httpx
 from datetime import datetime, timezone
 
-from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession
 
-from app.models import Conversation, Message, ProcessingStatus, MediaType, Base
+from app.models import Conversation, Message, ProcessingStatus, MediaType
+from app.auth import get_current_user, UserInfo
 from app.routers.search import _highlight, _score_message
 
 
 # ─── Fixture: seed search data via engine ────────────────────────────────────
 
-@pytest.fixture
-def seeded_app(app, db_engine):
+@pytest_asyncio.fixture
+async def seeded_client(app, db_engine):
     """
-    Seeds the test database with search data and returns (app, conv_id).
-    Uses the same engine the app override points to.
+    Semeia dados de busca e retorna AsyncClient com conv_id anexado.
     """
-    import asyncio
-
-    async def _seed():
-        session_factory = async_sessionmaker(
-            db_engine, class_=AsyncSession, expire_on_commit=False
+    session_factory = async_sessionmaker(
+        db_engine, class_=AsyncSession, expire_on_commit=False
+    )
+    async with session_factory() as session:
+        conv = Conversation(
+            session_id="search-test-session",
+            original_filename="test.zip",
+            upload_path="/tmp/test.zip",
+            extract_path="/tmp/media/test",
+            status=ProcessingStatus.COMPLETED,
+            progress=1.0,
+            conversation_name="Grupo Trabalho",
+            participants=["João", "Maria"],
+            total_messages=3,
+            total_media=0,
+            owner_id="test-admin-id",
         )
-        async with session_factory() as session:
-            conv = Conversation(
-                session_id="search-test-session",
-                original_filename="test.zip",
-                upload_path="/tmp/test.zip",
-                extract_path="/tmp/media/test",
-                status=ProcessingStatus.COMPLETED,
-                progress=1.0,
-                conversation_name="Grupo Trabalho",
-                participants=["João", "Maria"],
-                total_messages=3,
-                total_media=0,
+        session.add(conv)
+        await session.commit()
+        await session.refresh(conv)
+
+        messages_data = [
+            ("João", "Vamos marcar a reunião para amanhã"),
+            ("Maria", "Ok, pode ser às 14h na sala de reunião"),
+            ("João", "Perfeito, confirmado"),
+        ]
+        for i, (sender, msg_text) in enumerate(messages_data):
+            msg = Message(
+                conversation_id=conv.id,
+                sequence_number=i + 1,
+                timestamp=datetime(2026, 1, 1, 8, i, tzinfo=timezone.utc),
+                sender=sender,
+                original_text=msg_text,
+                media_type=MediaType.TEXT,
             )
-            session.add(conv)
-            await session.commit()
-            await session.refresh(conv)
+            session.add(msg)
+        await session.commit()
+        conv_id = conv.id
 
-            messages_data = [
-                ("João", "Vamos marcar a reunião para amanhã"),
-                ("Maria", "Ok, pode ser às 14h na sala de reunião"),
-                ("João", "Perfeito, confirmado"),
-            ]
-            for i, (sender, msg_text) in enumerate(messages_data):
-                msg = Message(
-                    conversation_id=conv.id,
-                    sequence_number=i + 1,
-                    timestamp=datetime(2026, 1, 1, 8, i, tzinfo=timezone.utc),
-                    sender=sender,
-                    original_text=msg_text,
-                    media_type=MediaType.TEXT,
-                )
-                session.add(msg)
-            await session.commit()
-            return conv.id
-
-    loop = asyncio.new_event_loop()
-    conv_id = loop.run_until_complete(_seed())
-    loop.close()
-    return app, conv_id
-
-
-@pytest.fixture
-def seeded_client(seeded_app):
-    """TestClient with seeded data."""
-    from fastapi.testclient import TestClient
-
-    app, conv_id = seeded_app
-    with TestClient(app, raise_server_exceptions=False) as c:
-        c._conv_id = conv_id  # attach for test access
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as c:
+        c.headers["X-Test-Conversation-Id"] = conv_id
         yield c
 
 
@@ -86,8 +73,8 @@ def seeded_client(seeded_app):
 class TestSearchMessages:
     """Testes para GET /api/search/messages."""
 
-    def test_search_messages_returns_results(self, seeded_client, auth_headers):
-        resp = seeded_client.get(
+    async def test_search_messages_returns_results(self, seeded_client, auth_headers):
+        resp = await seeded_client.get(
             "/api/search/messages", params={"q": "reunião"}, headers=auth_headers
         )
         assert resp.status_code == 200
@@ -96,8 +83,8 @@ class TestSearchMessages:
         assert data["total"] >= 1
         assert len(data["results"]) >= 1
 
-    def test_search_messages_empty_results(self, seeded_client, auth_headers):
-        resp = seeded_client.get(
+    async def test_search_messages_empty_results(self, seeded_client, auth_headers):
+        resp = await seeded_client.get(
             "/api/search/messages",
             params={"q": "xyznonexistent"},
             headers=auth_headers,
@@ -107,8 +94,8 @@ class TestSearchMessages:
         assert data["total"] == 0
         assert data["results"] == []
 
-    def test_search_messages_pagination_limit(self, seeded_client, auth_headers):
-        resp = seeded_client.get(
+    async def test_search_messages_pagination_limit(self, seeded_client, auth_headers):
+        resp = await seeded_client.get(
             "/api/search/messages",
             params={"q": "reunião", "limit": 1, "offset": 0},
             headers=auth_headers,
@@ -118,8 +105,8 @@ class TestSearchMessages:
         assert data["limit"] == 1
         assert len(data["results"]) <= 1
 
-    def test_search_messages_pagination_offset_beyond(self, seeded_client, auth_headers):
-        resp = seeded_client.get(
+    async def test_search_messages_pagination_offset_beyond(self, seeded_client, auth_headers):
+        resp = await seeded_client.get(
             "/api/search/messages",
             params={"q": "reunião", "limit": 50, "offset": 1000},
             headers=auth_headers,
@@ -127,8 +114,8 @@ class TestSearchMessages:
         assert resp.status_code == 200
         assert resp.json()["results"] == []
 
-    def test_search_messages_filter_by_sender(self, seeded_client, auth_headers):
-        resp = seeded_client.get(
+    async def test_search_messages_filter_by_sender(self, seeded_client, auth_headers):
+        resp = await seeded_client.get(
             "/api/search/messages",
             params={"q": "reunião", "sender": "João"},
             headers=auth_headers,
@@ -137,9 +124,9 @@ class TestSearchMessages:
         for item in resp.json()["results"]:
             assert item["sender"] == "João"
 
-    def test_search_messages_filter_by_conversation_id(self, seeded_client, auth_headers):
-        conv_id = seeded_client._conv_id
-        resp = seeded_client.get(
+    async def test_search_messages_filter_by_conversation_id(self, seeded_client, auth_headers):
+        conv_id = seeded_client.headers["X-Test-Conversation-Id"]
+        resp = await seeded_client.get(
             "/api/search/messages",
             params={"q": "reunião", "conversation_id": conv_id},
             headers=auth_headers,
@@ -148,8 +135,8 @@ class TestSearchMessages:
         for item in resp.json()["results"]:
             assert item["conversation_id"] == conv_id
 
-    def test_search_messages_regex(self, seeded_client, auth_headers):
-        resp = seeded_client.get(
+    async def test_search_messages_regex(self, seeded_client, auth_headers):
+        resp = await seeded_client.get(
             "/api/search/messages",
             params={"q": "reuni[ãa]o", "regex": "true"},
             headers=auth_headers,
@@ -157,16 +144,16 @@ class TestSearchMessages:
         assert resp.status_code == 200
         assert resp.json()["total"] >= 1
 
-    def test_search_messages_invalid_regex(self, seeded_client, auth_headers):
-        resp = seeded_client.get(
+    async def test_search_messages_invalid_regex(self, seeded_client, auth_headers):
+        resp = await seeded_client.get(
             "/api/search/messages",
             params={"q": "[invalid(", "regex": "true"},
             headers=auth_headers,
         )
         assert resp.status_code == 422
 
-    def test_search_messages_sort_chronological(self, seeded_client, auth_headers):
-        resp = seeded_client.get(
+    async def test_search_messages_sort_chronological(self, seeded_client, auth_headers):
+        resp = await seeded_client.get(
             "/api/search/messages",
             params={"q": "reunião", "sort_by": "chronological"},
             headers=auth_headers,
@@ -177,8 +164,8 @@ class TestSearchMessages:
             timestamps = [r["timestamp"] for r in results]
             assert timestamps == sorted(timestamps)
 
-    def test_search_messages_sort_relevance(self, seeded_client, auth_headers):
-        resp = seeded_client.get(
+    async def test_search_messages_sort_relevance(self, seeded_client, auth_headers):
+        resp = await seeded_client.get(
             "/api/search/messages",
             params={"q": "reunião", "sort_by": "relevance"},
             headers=auth_headers,
@@ -189,25 +176,22 @@ class TestSearchMessages:
             scores = [r["score"] for r in results]
             assert scores == sorted(scores, reverse=True)
 
-    def test_search_messages_unauthorized(self, app):
+    async def test_search_messages_unauthorized(self, app):
         """Sem override de auth, token inválido retorna 401 ou 403."""
-        from fastapi.testclient import TestClient
-        from app.auth import get_current_user
-
         # Remove auth override to test real auth
         app.dependency_overrides.pop(get_current_user, None)
         try:
-            with TestClient(app, raise_server_exceptions=False) as c:
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as c:
                 bad_headers = {"Authorization": "Bearer invalid-token-abc"}
-                resp = c.get(
+                resp = await c.get(
                     "/api/search/messages", params={"q": "test"}, headers=bad_headers
                 )
                 assert resp.status_code in (401, 403)
         finally:
             # Restore override
             async def _override():
-                from app.auth import UserInfo
-                return UserInfo(username="admin", full_name="Admin", is_admin=True)
+                return UserInfo(id="test-admin-id", username="admin", full_name="Admin", is_admin=True)
             app.dependency_overrides[get_current_user] = _override
 
 
@@ -219,8 +203,8 @@ class TestSearchMessages:
 class TestSearchConversations:
     """Testes para GET /api/search/conversations."""
 
-    def test_search_conversations_returns_results(self, seeded_client, auth_headers):
-        resp = seeded_client.get(
+    async def test_search_conversations_returns_results(self, seeded_client, auth_headers):
+        resp = await seeded_client.get(
             "/api/search/conversations",
             params={"q": "Trabalho"},
             headers=auth_headers,
@@ -231,8 +215,8 @@ class TestSearchConversations:
         assert data["total"] >= 1
         assert any("Trabalho" in r["conversation_name"] for r in data["results"])
 
-    def test_search_conversations_empty_results(self, seeded_client, auth_headers):
-        resp = seeded_client.get(
+    async def test_search_conversations_empty_results(self, seeded_client, auth_headers):
+        resp = await seeded_client.get(
             "/api/search/conversations",
             params={"q": "xyznonexistent"},
             headers=auth_headers,
@@ -242,16 +226,14 @@ class TestSearchConversations:
         assert data["total"] == 0
         assert data["results"] == []
 
-    def test_search_conversations_unauthorized(self, app):
+    async def test_search_conversations_unauthorized(self, app):
         """Sem override de auth, token inválido retorna 401 ou 403."""
-        from fastapi.testclient import TestClient
-        from app.auth import get_current_user
-
         app.dependency_overrides.pop(get_current_user, None)
         try:
-            with TestClient(app, raise_server_exceptions=False) as c:
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as c:
                 bad_headers = {"Authorization": "Bearer invalid-token-abc"}
-                resp = c.get(
+                resp = await c.get(
                     "/api/search/conversations",
                     params={"q": "test"},
                     headers=bad_headers,
@@ -259,8 +241,7 @@ class TestSearchConversations:
                 assert resp.status_code in (401, 403)
         finally:
             async def _override():
-                from app.auth import UserInfo
-                return UserInfo(username="admin", full_name="Admin", is_admin=True)
+                return UserInfo(id="test-admin-id", username="admin", full_name="Admin", is_admin=True)
             app.dependency_overrides[get_current_user] = _override
 
 

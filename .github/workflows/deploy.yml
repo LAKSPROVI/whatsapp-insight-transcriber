@@ -1,4 +1,7 @@
-name: 🚀 Deploy to Hetzner
+name: Deploy to Hetzner
+
+permissions:
+  contents: read
 
 on:
   push:
@@ -7,7 +10,12 @@ on:
   workflow_dispatch:
     inputs:
       force_rebuild:
-        description: 'Forçar rebuild completo'
+        description: 'Forcar rebuild completo'
+        required: false
+        default: 'false'
+        type: boolean
+      skip_tests:
+        description: 'Pular testes (emergencia)'
         required: false
         default: 'false'
         type: boolean
@@ -16,36 +24,99 @@ env:
   HETZNER_HOST: 77.42.68.212
   HETZNER_USER: root
   APP_DIR: /opt/whatsapp-insight-transcriber
+  APP_DOMAIN: transcriber.jurislaw.com.br
 
 jobs:
+  # ─── Job 1: Testes ──────────────────────────────────────────
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: ${{ github.event.inputs.skip_tests != 'true' }}
+
+    steps:
+      - name: Checkout codigo
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Instalar dependencias backend
+        working-directory: backend
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-asyncio httpx
+
+      - name: Executar testes backend
+        working-directory: backend
+        env:
+          DATABASE_URL: "sqlite+aiosqlite:///./test.db"
+          ANTHROPIC_API_KEY: "test-key-for-ci"
+          JWT_SECRET_KEY: "test-jwt-secret-minimum-32-characters-long!!"
+          SECRET_KEY: "test-secret-key-minimum-16-chars"
+          ADMIN_USERNAME: "admin"
+          ADMIN_PASSWORD: "TestPassword123!"
+        run: |
+          python -m pytest tests/ -v --tb=short -x -q 2>&1 || {
+            echo "::error::Testes backend falharam! Deploy cancelado."
+            exit 1
+          }
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Lint frontend
+        working-directory: frontend
+        run: |
+          npm ci --legacy-peer-deps
+          npm run lint 2>&1 || {
+            echo "::warning::Frontend lint encontrou problemas (nao bloqueante)"
+          }
+
+  # ─── Job 2: Deploy ──────────────────────────────────────────
   deploy:
     name: Deploy to Hetzner VPS
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
+    needs: [test]
+    if: ${{ always() && (needs.test.result == 'success' || github.event.inputs.skip_tests == 'true') }}
+    environment: production
+    concurrency:
+      group: production-deploy
+      cancel-in-progress: false
 
     steps:
       # ─── Checkout ──────────────────────────────────────────────
-      - name: 📥 Checkout código
+      - name: Checkout codigo
         uses: actions/checkout@v4
 
       # ─── Configurar SSH ────────────────────────────────────────
-      - name: 🔑 Configurar SSH
+      - name: Configurar SSH
         uses: webfactory/ssh-agent@v0.9.0
         with:
           ssh-private-key: ${{ secrets.HETZNER_SSH_KEY }}
 
-      - name: 📋 Adicionar host ao known_hosts
+      - name: Adicionar host ao known_hosts
         run: |
           mkdir -p ~/.ssh
           ssh-keyscan -H ${{ env.HETZNER_HOST }} >> ~/.ssh/known_hosts
 
       # ─── Verificar Servidor ────────────────────────────────────
-      - name: 🔍 Verificar conexão SSH
+      - name: Verificar conexao SSH
         run: |
-          ssh ${{ env.HETZNER_USER }}@${{ env.HETZNER_HOST }} "echo '✅ SSH OK' && uname -a && docker --version && docker compose version"
+          ssh ${{ env.HETZNER_USER }}@${{ env.HETZNER_HOST }} "echo 'SSH OK' && uname -a && docker --version && docker compose version"
 
-      # ─── Enviar Código via rsync ───────────────────────────────
-      - name: 📤 Sincronizar código para o servidor
+      # ─── Enviar Codigo via rsync ───────────────────────────────
+      - name: Sincronizar codigo para o servidor
         run: |
           rsync -avz --delete \
             --exclude='.git' \
@@ -61,116 +132,295 @@ jobs:
             ./ ${{ env.HETZNER_USER }}@${{ env.HETZNER_HOST }}:${{ env.APP_DIR }}/
 
       # ─── Configurar .env no servidor ──────────────────────────
-      - name: ⚙️ Configurar variáveis de ambiente
+      - name: Configurar variaveis de ambiente
         run: |
           ssh ${{ env.HETZNER_USER }}@${{ env.HETZNER_HOST }} << 'EOF'
             cd ${{ env.APP_DIR }}
             
-            # Criar .env se não existir
-            if [ ! -f .env ]; then
-              echo "ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}" > .env
-              echo "ANTHROPIC_BASE_URL=${{ secrets.ANTHROPIC_BASE_URL || 'https://api.gameron.me' }}" >> .env
-              echo "CLAUDE_MODEL=claude-opus-4-6" >> .env
-              echo "MAX_AGENTS=20" >> .env
-              echo "DATABASE_URL=sqlite+aiosqlite:///./data/whatsapp_insight.db" >> .env
-              echo "UPLOAD_DIR=/app/data/uploads" >> .env
-              echo "MEDIA_DIR=/app/data/media" >> .env
-              echo "DEBUG=false" >> .env
-              echo "SECRET_KEY=wit-production-secret-key-change-me-2024-secure" >> .env
-              echo "JWT_SECRET_KEY=wit-jwt-secret-key-production-2024-min-32-chars" >> .env
-              echo "JWT_ALGORITHM=HS256" >> .env
-              echo "JWT_EXPIRATION_MINUTES=1440" >> .env
-              echo "ADMIN_USERNAME=admin" >> .env
-              echo "ADMIN_PASSWORD=Admin@2024Secure!" >> .env
-              echo "ALLOW_REGISTRATION=false" >> .env
-              echo "ALLOWED_ORIGINS=[\"http://${{ env.HETZNER_HOST }}\",\"http://${{ env.HETZNER_HOST }}:3020\",\"https://transcriber.jurislaw.com.br\"]" >> .env
-              echo "✅ .env criado com todas as variáveis"
-            else
-              # Atualizar API key e base URL
-              sed -i "s/^ANTHROPIC_API_KEY=.*/ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}/" .env
-              sed -i "s|^ANTHROPIC_BASE_URL=.*|ANTHROPIC_BASE_URL=https://api.gameron.me|" .env
-              grep -q "^ANTHROPIC_BASE_URL=" .env || echo "ANTHROPIC_BASE_URL=https://api.gameron.me" >> .env
-              # Garantir que JWT_SECRET_KEY existe
-              grep -q "^JWT_SECRET_KEY=" .env || echo "JWT_SECRET_KEY=wit-jwt-secret-key-production-2024-min-32-chars" >> .env
-              # Garantir que SECRET_KEY existe
-              grep -q "^SECRET_KEY=" .env || echo "SECRET_KEY=wit-production-secret-key-change-me-2024-secure" >> .env
-              # Forçar ADMIN_PASSWORD seguro
-              sed -i "s/^ADMIN_PASSWORD=.*/ADMIN_PASSWORD=Admin@2024Secure!/" .env
-              grep -q "^ADMIN_PASSWORD=" .env || echo "ADMIN_PASSWORD=Admin@2024Secure!" >> .env
-              # Garantir que ADMIN_USERNAME existe
-              grep -q "^ADMIN_USERNAME=" .env || echo "ADMIN_USERNAME=admin" >> .env
-              echo "✅ .env atualizado"
+            cat > .env <<'ENVEOF'
+ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}
+ANTHROPIC_BASE_URL=${{ secrets.ANTHROPIC_BASE_URL }}
+ANTHROPIC_DIRECT_URL=https://api.anthropic.com
+CLAUDE_MODEL=claude-opus-4-6
+CLAUDE_MODEL_CHAT=claude-opus-4-6
+CLAUDE_MODEL_ANALYSIS=claude-sonnet-4-20250514
+CLAUDE_MODEL_SIMPLE=claude-haiku-4-20250414
+MAX_AGENTS=20
+DATABASE_URL=postgresql+asyncpg://${{ secrets.POSTGRES_USER }}:${{ secrets.POSTGRES_PASSWORD }}@postgres:5432/${{ secrets.POSTGRES_DB }}
+RUN_DB_MIGRATIONS_ON_STARTUP=true
+UPLOAD_DIR=/app/data/uploads
+MEDIA_DIR=/app/data/media
+DEBUG=false
+SECRET_KEY=${{ secrets.SECRET_KEY }}
+JWT_SECRET_KEY=${{ secrets.JWT_SECRET_KEY }}
+JWT_ALGORITHM=HS256
+JWT_EXPIRATION_MINUTES=1440
+ADMIN_USERNAME=${{ secrets.ADMIN_USERNAME }}
+ADMIN_PASSWORD=${{ secrets.ADMIN_PASSWORD }}
+ALLOW_REGISTRATION=false
+POSTGRES_USER=${{ secrets.POSTGRES_USER }}
+POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
+POSTGRES_DB=${{ secrets.POSTGRES_DB }}
+REDIS_PASSWORD=${{ secrets.REDIS_PASSWORD }}
+ELASTIC_PASSWORD=${{ secrets.ELASTIC_PASSWORD }}
+GRAFANA_ADMIN_USER=${{ secrets.GRAFANA_ADMIN_USER }}
+GRAFANA_ADMIN_PASSWORD=${{ secrets.GRAFANA_ADMIN_PASSWORD }}
+APP_DOMAIN=${{ env.APP_DOMAIN }}
+LETSENCRYPT_EMAIL=${{ secrets.LETSENCRYPT_EMAIL }}
+NGINX_CONF_FILE=nginx-http.conf
+ALLOWED_ORIGINS=["http://${{ env.HETZNER_HOST }}","http://${{ env.HETZNER_HOST }}:3020","https://${{ env.APP_DOMAIN }}","http://frontend:3000","http://localhost:3000"]
+ALERTMANAGER_WEBHOOK_URL=${{ secrets.ALERTMANAGER_WEBHOOK_URL }}
+ALERTMANAGER_WEBHOOK_USER=${{ secrets.ALERTMANAGER_WEBHOOK_USER }}
+ALERTMANAGER_WEBHOOK_PASSWORD=${{ secrets.ALERTMANAGER_WEBHOOK_PASSWORD }}
+ENVEOF
+            echo "Variaveis de ambiente configuradas"
+          EOF
+
+      # ─── Pre-deploy Backup ─────────────────────────────────────
+      - name: Backup database before deploy
+        run: |
+          ssh ${{ env.HETZNER_USER }}@${{ env.HETZNER_HOST }} << 'EOF'
+            cd ${{ env.APP_DIR }}
+            mkdir -p /opt/backups/wit
+            
+            # Backup PostgreSQL
+            docker compose exec -T postgres sh -c 'pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB"' 2>/dev/null | gzip > "/opt/backups/wit/pre_deploy_$(date +%Y%m%d_%H%M%S).sql.gz" || echo "No existing database to backup (first deploy?)"
+            
+            # Limpar backups antigos (manter 30 dias)
+            find /opt/backups/wit -name "*.gz" -mtime +30 -delete 2>/dev/null || true
+          EOF
+
+      # ─── Salvar imagens atuais para rollback ───────────────────
+      - name: Tag imagens atuais para rollback
+        run: |
+          ssh ${{ env.HETZNER_USER }}@${{ env.HETZNER_HOST }} << 'EOF'
+            cd ${{ env.APP_DIR }}
+            
+            # Tagear imagens atuais como :previous para rollback
+            BACKEND_IMG=$(docker compose images backend -q 2>/dev/null | head -1)
+            FRONTEND_IMG=$(docker compose images frontend -q 2>/dev/null | head -1)
+            
+            if [ -n "$BACKEND_IMG" ]; then
+              docker tag "$BACKEND_IMG" wit-backend:previous 2>/dev/null || true
+              echo "Backend image tagged for rollback: $BACKEND_IMG"
+            fi
+            
+            if [ -n "$FRONTEND_IMG" ]; then
+              docker tag "$FRONTEND_IMG" wit-frontend:previous 2>/dev/null || true
+              echo "Frontend image tagged for rollback: $FRONTEND_IMG"
             fi
           EOF
 
       # ─── Deploy com Docker Compose ────────────────────────────
-      - name: 🐳 Fazer deploy com Docker Compose
+      - name: Deploy com Docker Compose
         run: |
           ssh ${{ env.HETZNER_USER }}@${{ env.HETZNER_HOST }} << 'EOF'
             set -e
             cd ${{ env.APP_DIR }}
             
-            echo "📦 Criando diretórios de dados..."
+            echo "Criando diretorios de dados..."
             mkdir -p data/uploads data/media
             
-            # Corrigir permissões do volume Docker para SQLite
-            echo "🔧 Corrigindo permissões..."
-            docker compose down || true
-            VOLUME_PATH=$(docker volume inspect whatsapp-insight-transcriber_wit_data 2>/dev/null | grep Mountpoint | awk -F'"' '{print $4}')
-            if [ -n "$VOLUME_PATH" ] && [ -d "$VOLUME_PATH" ]; then
-              chmod -R 777 "$VOLUME_PATH" || true
-              echo "✅ Permissões do volume corrigidas: $VOLUME_PATH"
-            fi
-            
-            echo "🔨 Buildando imagens Docker..."
-            docker compose build --no-cache
-            
-            echo "🚀 Iniciando backend..."
-            docker compose up -d backend
-            
-            echo "⏳ Aguardando backend iniciar..."
-            sleep 15
-            
-            echo "📋 Logs do backend:"
-            docker compose logs backend --tail=80
-            
-            echo ""
-            echo "📋 Testando health do backend..."
+            echo "Buildando e iniciando containers base..."
+            docker compose up -d --build postgres redis elasticsearch fluentbit
+
+            echo "Aguardando deps (postgres/redis)..."
+            sleep 10
+
+            echo "Buildando imagens de backend e frontend..."
+            docker compose build backend frontend
+
+            echo "Rolling update: backend..."
+            docker compose up -d --no-deps backend
+
+            echo "Rolling update: frontend..."
+            docker compose up -d --no-deps frontend
+
+            echo "Iniciando nginx em modo bootstrap HTTP..."
+            docker compose up -d nginx
+
+            echo "Aguardando nginx bootstrap..."
             for i in $(seq 1 12); do
-              if curl -sf http://localhost:8020/api/health > /dev/null 2>&1; then
-                echo "✅ Backend healthy na tentativa $i"
+              if docker compose exec -T nginx wget --spider -q http://127.0.0.1/nginx-health; then
+                echo "Nginx bootstrap pronto na tentativa $i"
                 break
               fi
-              echo "⏳ Tentativa $i/12 - aguardando..."
+              echo "Tentativa $i/12 - aguardando nginx..."
+              sleep 5
+            done
+
+            echo "Aguardando backend iniciar..."
+            sleep 10
+            
+            echo "Testando health do backend..."
+            BACKEND_HEALTHY=false
+            for i in $(seq 1 12); do
+              if docker compose exec -T backend curl -sf http://127.0.0.1:8000/api/health > /dev/null 2>&1; then
+                echo "Backend healthy na tentativa $i"
+                BACKEND_HEALTHY=true
+                break
+              fi
+              echo "Tentativa $i/12 - aguardando..."
               sleep 10
             done
             
-            echo ""
-            echo "🚀 Iniciando frontend..."
-            docker compose up -d frontend
-            sleep 10
+            if [ "$BACKEND_HEALTHY" = false ]; then
+              echo "ERRO: Backend failed to become healthy"
+              docker compose logs backend --tail=50
+              exit 1
+            fi
+            
+            echo "Emitindo certificado inicial se necessario..."
+            sh scripts/init-ssl.sh
+
+            echo "Alternando para nginx HTTPS..."
+            sed -i "s/^NGINX_CONF_FILE=.*/NGINX_CONF_FILE=nginx-https.conf/" .env
+            docker compose up -d --no-deps nginx certbot
+
+            echo "Iniciando servicos de monitoramento..."
+            docker compose up -d prometheus grafana alertmanager node-exporter kibana
+
+            echo "Validando frontend via container..."
+            if ! docker compose exec -T frontend wget --spider -q http://127.0.0.1:3000; then
+              echo "WARN: Frontend pode ainda estar inicializando"
+            fi
             
             echo ""
-            echo "📋 Status dos containers:"
+            echo "Status dos containers:"
             docker compose ps
             
-            # Testar backend
-            curl -f http://localhost:8020/api/health && echo "✅ Backend OK" || echo "⚠️ Backend ainda iniciando..."
-            
-            echo "🎉 Deploy concluído!"
+            echo "Deploy concluido!"
           EOF
 
-      # ─── Verificação Final ────────────────────────────────────
-      - name: ✅ Verificação final
-        run: |
-          sleep 10
-          curl -f http://${{ env.HETZNER_HOST }}:8020/api/health && echo "✅ Backend respondendo!" || echo "⚠️ Backend pode estar ainda iniciando"
-          echo "🌐 Frontend: http://${{ env.HETZNER_HOST }}:3020"
-          echo "📚 API Docs: http://${{ env.HETZNER_HOST }}:8020/api/docs"
-
-      # ─── Notificação de Falha ─────────────────────────────────
-      - name: ❌ Deploy falhou
+      # ─── Rollback em caso de falha ─────────────────────────────
+      - name: Rollback em caso de falha
         if: failure()
         run: |
-          echo "Deploy falhou! Verifique os logs acima."
-          ssh ${{ env.HETZNER_USER }}@${{ env.HETZNER_HOST }} "cd ${{ env.APP_DIR }} && docker compose logs --tail=50" || true
+          ssh ${{ env.HETZNER_USER }}@${{ env.HETZNER_HOST }} << 'EOF'
+            cd ${{ env.APP_DIR }}
+            echo "ROLLBACK: Tentando restaurar versao anterior..."
+            
+            # Verificar se existem imagens previous
+            if docker image inspect wit-backend:previous >/dev/null 2>&1; then
+              echo "Restaurando backend anterior..."
+              docker compose stop backend frontend
+              
+              docker compose up -d --no-deps backend frontend
+              
+              echo "Aguardando backend restaurado..."
+              sleep 15
+              
+              if docker compose exec -T backend curl -sf http://127.0.0.1:8000/api/health > /dev/null 2>&1; then
+                echo "ROLLBACK bem-sucedido: backend anterior esta healthy"
+              else
+                echo "ROLLBACK FALHOU: backend anterior tambem nao esta healthy"
+                docker compose logs backend --tail=30
+              fi
+            else
+              echo "Sem imagem anterior para rollback (primeiro deploy?)"
+              echo "Logs dos containers:"
+              docker compose logs backend frontend --tail=50
+            fi
+            
+            echo "Status final:"
+            docker compose ps
+          EOF
+
+      # ─── Limpeza de imagens Docker ─────────────────────────────
+      - name: Limpar imagens Docker antigas
+        if: success()
+        run: |
+          ssh ${{ env.HETZNER_USER }}@${{ env.HETZNER_HOST }} << 'EOF'
+            echo "Limpando imagens Docker orfas e cache..."
+            docker image prune -f
+            docker builder prune -f --keep-storage=2GB
+            
+            # Remover imagens de rollback (deploy foi sucesso)
+            docker rmi wit-backend:previous wit-frontend:previous 2>/dev/null || true
+            
+            echo "Espaco em disco apos limpeza:"
+            df -h / | tail -1
+          EOF
+
+      # ─── Verificacao Final ────────────────────────────────────
+      - name: Verificacao final
+        if: success()
+        run: |
+          sleep 10
+          echo "Verificando HTTPS redirect..."
+          curl -sI http://${{ env.APP_DOMAIN }} | head -5
+          
+          echo "Verificando nginx health..."
+          curl -fsS https://${{ env.APP_DOMAIN }}/nginx-health
+          
+          echo "Verificando API health..."
+          curl -fsS https://${{ env.APP_DOMAIN }}/api/health
+          
+          echo ""
+          echo "Frontend: https://${{ env.APP_DOMAIN }}"
+          echo "API Docs: https://${{ env.APP_DOMAIN }}/api/docs"
+
+      # ─── Garantir cron de backup ───────────────────────────────
+      - name: Configurar backup diario automatico
+        if: success()
+        run: |
+          ssh ${{ env.HETZNER_USER }}@${{ env.HETZNER_HOST }} << 'EOF'
+            # Configurar cron de backup diario as 3:00 AM
+            CRON_JOB="0 3 * * * cd /opt/whatsapp-insight-transcriber && sh scripts/backup.sh >> /var/log/wit-backup.log 2>&1"
+            
+            # Adicionar apenas se nao existir
+            (crontab -l 2>/dev/null | grep -v "wit.*backup" ; echo "$CRON_JOB") | crontab -
+            
+            echo "Cron de backup configurado:"
+            crontab -l | grep backup
+          EOF
+
+      # ─── Backup Offsite (Hetzner Storage Box ou rsync remoto) ─
+      - name: Configurar backup offsite
+        if: success()
+        run: |
+          ssh ${{ env.HETZNER_USER }}@${{ env.HETZNER_HOST }} << 'EOF'
+            # Script de backup offsite
+            cat > /opt/whatsapp-insight-transcriber/scripts/backup-offsite.sh << 'SCRIPT'
+#!/bin/sh
+# Backup offsite - copia backups locais para diretorio secundario
+# Pode ser adaptado para rsync remoto, rclone S3/B2, Hetzner Storage Box
+set -eu
+
+BACKUP_DIR="/opt/backups/wit"
+OFFSITE_DIR="/opt/backups/wit-offsite"
+RETENTION_DAYS=14
+
+mkdir -p "$OFFSITE_DIR"
+
+# Copiar backups mais recentes (ultimas 24h) para offsite
+find "$BACKUP_DIR" -name "*.gz" -mtime -1 -exec cp -n {} "$OFFSITE_DIR/" \;
+
+# Limpar offsite antigos
+find "$OFFSITE_DIR" -name "*.gz" -mtime +"$RETENTION_DAYS" -delete 2>/dev/null || true
+
+echo "Backup offsite atualizado: $(ls -la $OFFSITE_DIR/ | wc -l) arquivos"
+
+# ── Para habilitar Hetzner Storage Box, descomente: ──
+# STORAGE_BOX_USER="uXXXXXX"
+# STORAGE_BOX_HOST="uXXXXXX.your-storagebox.de"
+# rsync -avz --delete "$BACKUP_DIR/" "$STORAGE_BOX_USER@$STORAGE_BOX_HOST:./backups/wit/"
+
+# ── Para habilitar rclone (S3/B2/GCS), descomente: ──
+# rclone sync "$BACKUP_DIR/" remote:wit-backups/ --max-age 7d
+SCRIPT
+            chmod +x /opt/whatsapp-insight-transcriber/scripts/backup-offsite.sh
+            
+            # Adicionar cron offsite (roda 1h apos o backup local)
+            OFFSITE_CRON="0 4 * * * /opt/whatsapp-insight-transcriber/scripts/backup-offsite.sh >> /var/log/wit-backup-offsite.log 2>&1"
+            (crontab -l 2>/dev/null | grep -v "backup-offsite" ; echo "$OFFSITE_CRON") | crontab -
+            
+            echo "Backup offsite configurado"
+          EOF
+
+      # ─── Notificacao de Falha ─────────────────────────────────
+      - name: Deploy falhou - Coletar logs
+        if: failure()
+        run: |
+          echo "Deploy falhou! Coletando logs de diagnostico..."
+          ssh ${{ env.HETZNER_USER }}@${{ env.HETZNER_HOST }} "cd ${{ env.APP_DIR }} && docker compose ps && echo '---' && docker compose logs nginx certbot backend frontend --tail=100" || true

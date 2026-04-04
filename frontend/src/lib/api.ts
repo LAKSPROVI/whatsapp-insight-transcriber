@@ -72,6 +72,51 @@ function getHTTPErrorMessage(status: number, data: string): string {
 
 const TOKEN_KEY = "wit_auth_token";
 
+
+export function buildApiUrl(path: string): string {
+  if (!API_BASE) return path;
+  return `${API_BASE}${path}`;
+}
+
+
+export function buildAuthenticatedMediaUrl(path: string): string {
+  const token = getToken();
+  const url = new URL(buildApiUrl(path), typeof window !== "undefined" ? window.location.origin : "http://localhost");
+  if (token) {
+    url.searchParams.set("token", token);
+  }
+  if (!API_BASE && typeof window !== "undefined") {
+    return `${url.pathname}${url.search}`;
+  }
+  return url.toString();
+}
+
+
+export function buildWebSocketUrl(path: string): string {
+  if (typeof window !== "undefined" && !API_BASE) {
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    return `${protocol}//${window.location.host}${path}`;
+  }
+
+  return `${API_BASE.replace(/^http/, "ws")}${path}`;
+}
+
+
+export async function fetchMediaBlob(path: string): Promise<string> {
+  const token = getToken();
+  const response = await fetch(buildApiUrl(path), {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+
+  if (!response.ok) {
+    const body = await response.text().catch(() => "");
+    throw new APIError(response.status, response.statusText, body);
+  }
+
+  const blob = await response.blob();
+  return URL.createObjectURL(blob);
+}
+
 export function setToken(token: string): void {
   if (typeof window !== "undefined") {
     localStorage.setItem(TOKEN_KEY, token);
@@ -141,7 +186,7 @@ async function apiFetch<T>(
 
     try {
       const opts = authHeaders(init);
-      const res = await fetch(`${API_BASE}${path}`, {
+      const res = await fetch(buildApiUrl(path), {
         ...opts,
         signal: init?.signal ?? controller.signal,
       });
@@ -487,7 +532,10 @@ export async function exportConversation(
     blob = await res.blob();
   }
 
-  const ext = options.format === "pdf" ? "pdf" : "docx";
+  const extMap: Record<string, string> = {
+    pdf: "pdf", docx: "docx", xlsx: "xlsx", csv: "csv", html: "html", json: "json",
+  };
+  const ext = extMap[options.format] || options.format;
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
@@ -521,6 +569,92 @@ export async function searchConversations(
   if (dateFrom) qs.set("date_from", dateFrom);
   if (dateTo) qs.set("date_to", dateTo);
   return apiFetch<SearchConversationsResponse>(`/api/search/conversations?${qs}`);
+}
+
+// ─── Custody & Audit ─────────────────────────────────────────────────────────
+
+export interface CustodyRecord {
+  id: string;
+  event_type: string;
+  actor_id?: string;
+  description?: string;
+  prev_hash: string;
+  current_hash: string;
+  evidence?: Record<string, unknown>;
+  created_at?: string;
+}
+
+export interface CustodyChainResponse {
+  conversation_id: string;
+  records: CustodyRecord[];
+  total: number;
+}
+
+export interface ChainVerificationResponse {
+  valid: boolean;
+  records_checked: number;
+  error?: string;
+  first_hash?: string;
+  last_hash?: string;
+}
+
+export interface CertificateResponse {
+  certificate_id: string;
+  signature: string;
+  chain_valid: boolean;
+  zip_hash: string;
+  merkle_root: string;
+  issued_at: string;
+  file_count: number;
+  message_count: number;
+  conversation_name: string;
+}
+
+export interface AuditEvent {
+  id: string;
+  action: string;
+  user_id?: string;
+  resource_type?: string;
+  resource_id?: string;
+  details?: Record<string, unknown>;
+  ip_address?: string;
+  user_agent?: string;
+  prev_hash?: string;
+  event_hash?: string;
+  created_at?: string;
+}
+
+export interface AuditEventsResponse {
+  events: AuditEvent[];
+  total: number;
+}
+
+export async function getCustodyChain(conversationId: string): Promise<CustodyChainResponse> {
+  return apiFetch<CustodyChainResponse>(`/api/custody/${conversationId}/chain`);
+}
+
+export async function verifyCustodyChain(conversationId: string): Promise<ChainVerificationResponse> {
+  return apiFetch<ChainVerificationResponse>(`/api/custody/${conversationId}/verify`);
+}
+
+export async function generateCertificate(conversationId: string): Promise<CertificateResponse> {
+  return apiFetch<CertificateResponse>(`/api/custody/${conversationId}/certificate`, {
+    method: "POST",
+  });
+}
+
+export async function verifyCertificate(certificateId: string): Promise<{ valid: boolean; signature_valid: boolean; chain_valid: boolean }> {
+  return apiFetch(`/api/custody/certificate/${certificateId}/verify`);
+}
+
+export async function getAuditEvents(
+  conversationId: string,
+  limit = 100,
+  offset = 0
+): Promise<AuditEventsResponse> {
+  return apiFetch<AuditEventsResponse>(
+    `/api/custody/audit/${conversationId}?limit=${limit}&offset=${offset}`
+  );
 }
 
 // ─── Templates ──────────────────────────────────────────────────────────────

@@ -13,9 +13,8 @@ from pathlib import Path
 from typing import List, Optional
 
 import asyncio
-import asyncio
 import aiofiles
-from fastapi import APIRouter, Depends, File, UploadFile, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Depends, File, UploadFile, HTTPException, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc
@@ -30,7 +29,13 @@ from app.schemas import (
 )
 from app.services.conversation_processor import ConversationProcessor
 from app.dependencies import get_orchestrator
-from app.auth import get_current_user, UserInfo
+from app.auth import (
+    apply_owner_filter,
+    ensure_owner_access,
+    get_current_user,
+    log_audit_event,
+    UserInfo,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/conversations", tags=["conversations"])
@@ -108,11 +113,11 @@ def _validate_zip_file(content: bytes) -> None:
 
 @router.post("/upload", response_model=UploadResponse)
 async def upload_conversation(
-    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
     orchestrator=Depends(get_orchestrator),
     current_user: UserInfo = Depends(get_current_user),
+    request: Request = None,
 ):
     """
     Faz upload de um arquivo .zip de exportação do WhatsApp e inicia processamento.
@@ -187,11 +192,59 @@ async def upload_conversation(
         extract_path=str(settings.MEDIA_DIR / session_id),
         status=ProcessingStatus.UPLOADING,
         progress=0.02,
-        progress_message="Upload concluído, iniciando processamento...",
+        progress_message="Upload conclu\u00eddo, iniciando processamento...",
+        owner_id=current_user.id,
     )
     db.add(conversation)
+    await db.flush()
+
+    # LGPD: Set retention expiry
+    from datetime import timedelta, timezone as tz
+    if settings.DATA_RETENTION_DAYS > 0:
+        from datetime import datetime as dt
+        conversation.retention_expires_at = dt.now(tz.utc) + timedelta(days=settings.DATA_RETENTION_DAYS)
+
+    # LGPD: Record upload consent
+    from app.models import UserConsent
+    consent = UserConsent(
+        user_id=current_user.id,
+        consent_type="upload_processing",
+        granted=True,
+        ip_address=request.client.host if request and request.client else None,
+        user_agent=(request.headers.get("user-agent", "")[:500]) if request else None,
+        consent_text="Consentimento para processamento de upload concedido via plataforma.",
+    )
+    db.add(consent)
+    conversation.consent_id = consent.id
+
+    await log_audit_event(
+        db,
+        action="conversation.uploaded",
+        current_user=current_user,
+        resource_type="conversation",
+        resource_id=conversation.id,
+        details={"filename": file.filename, "session_id": session_id},
+        request=request,
+    )
     await db.commit()
     await db.refresh(conversation)
+
+    # LGPD/Custody: Create import event in custody chain
+    try:
+        import hashlib
+        zip_hash = hashlib.sha256(content).hexdigest()
+        from app.services.custody_service import CustodyChainService
+        custody = CustodyChainService(db)
+        await custody.create_import_event(
+            conversation_id=str(conversation.id),
+            user_id=current_user.id,
+            zip_hash=zip_hash,
+            file_manifest={"original_file": zip_hash},
+            ip_address=request.client.host if request and request.client else None,
+        )
+        await db.commit()
+    except Exception as e:
+        logger.warning(f"Custody chain creation failed (non-blocking): {e}")
 
     # Inicializar progresso
     _progress_store[session_id] = {
@@ -300,14 +353,18 @@ async def get_progress(
     """
     # Buscar no banco — única fonte de verdade
     # (em ambientes multi-worker, _progress_store não é compartilhado entre processos)
-    stmt = select(Conversation).where(Conversation.session_id == session_id)
+    stmt = apply_owner_filter(
+        select(Conversation).where(Conversation.session_id == session_id),
+        Conversation,
+        current_user,
+    )
     result = await db.execute(stmt)
     conv = result.scalar_one_or_none()
 
     if not conv:
         # Fallback: verificar store em memória (mesmo worker)
         progress = _progress_store.get(session_id)
-        if not progress:
+        if not progress or not current_user.is_admin:
             raise HTTPException(404, "Sessão não encontrada")
         return ProcessingProgress(
             session_id=session_id,
@@ -368,7 +425,11 @@ async def list_conversations(
     **Erros possíveis:**
     - **401 Unauthorized**: Token ausente ou inválido.
     """
-    stmt = select(Conversation).order_by(desc(Conversation.created_at)).offset(skip).limit(limit)
+    stmt = apply_owner_filter(
+        select(Conversation).order_by(desc(Conversation.created_at)),
+        Conversation,
+        current_user,
+    ).offset(skip).limit(limit)
     result = await db.execute(stmt)
     conversations = result.scalars().all()
     return conversations
@@ -416,14 +477,17 @@ async def get_conversation(
     - **404 Not Found**: Conversa não encontrada.
     - **401 Unauthorized**: Token ausente ou inválido.
     """
-    stmt = select(Conversation).where(Conversation.id == conversation_id).options(
+    stmt = apply_owner_filter(
+        select(Conversation).where(Conversation.id == conversation_id),
+        Conversation,
+        current_user,
+    ).options(
         selectinload(Conversation.messages)
     )
     result = await db.execute(stmt)
     conv = result.scalar_one_or_none()
 
-    if not conv:
-        raise HTTPException(404, "Conversa não encontrada")
+    ensure_owner_access(conv, current_user)
 
     return conv
 
@@ -487,6 +551,16 @@ async def get_messages(
     - **401 Unauthorized**: Token ausente ou inválido.
     """
     from app.models import MediaType
+
+    conv_stmt = apply_owner_filter(
+        select(Conversation).where(Conversation.id == conversation_id),
+        Conversation,
+        current_user,
+    )
+    conv_result = await db.execute(conv_stmt)
+    conv = conv_result.scalar_one_or_none()
+    ensure_owner_access(conv, current_user)
+
     stmt = select(Message).where(Message.conversation_id == conversation_id)
 
     if media_only:
@@ -534,12 +608,15 @@ async def delete_conversation(
     - **404 Not Found**: Conversa não encontrada.
     - **401 Unauthorized**: Token ausente ou inválido.
     """
-    stmt = select(Conversation).where(Conversation.id == conversation_id)
+    stmt = apply_owner_filter(
+        select(Conversation).where(Conversation.id == conversation_id),
+        Conversation,
+        current_user,
+    )
     result = await db.execute(stmt)
     conv = result.scalar_one_or_none()
 
-    if not conv:
-        raise HTTPException(404, "Conversa não encontrada")
+    ensure_owner_access(conv, current_user)
 
     # Limpar arquivos
     import shutil
@@ -548,7 +625,81 @@ async def delete_conversation(
     if conv.upload_path and os.path.exists(conv.upload_path):
         os.remove(conv.upload_path)
 
+    await log_audit_event(
+        db,
+        action="conversation.deleted",
+        current_user=current_user,
+        resource_type="conversation",
+        resource_id=conv.id,
+        details={"session_id": conv.session_id, "filename": conv.original_filename},
+    )
+
+    # Record custody chain event for deletion
+    try:
+        from app.services.custody_service import CustodyChainService
+        custody = CustodyChainService(db)
+        await custody.add_event(
+            conversation_id=str(conv.id),
+            event_type="DELETED",
+            actor_id=current_user.id,
+            description=f"Conversa excluida pelo usuario {current_user.username}",
+        )
+    except Exception:
+        pass  # Non-blocking
+
     await db.delete(conv)
     await db.commit()
 
     return {"message": "Conversa removida com sucesso"}
+
+
+# ── Topic Segmentation ───────────────────────────────────────────────────
+
+@router.get("/{conversation_id}/topics")
+async def get_topic_segmentation(
+    conversation_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: UserInfo = Depends(get_current_user),
+):
+    """
+    Segmenta a conversa em topicos usando IA.
+    Retorna topicos, transicoes de assunto e pontos-chave.
+    """
+    # Buscar conversa com verificacao de ownership
+    from app.models import Conversation
+    stmt = select(Conversation).where(Conversation.id == conversation_id)
+    result = await db.execute(stmt)
+    conv = result.scalar_one_or_none()
+    if not conv:
+        raise HTTPException(404, "Conversa nao encontrada")
+    ensure_owner_access(conv, current_user)
+
+    # Buscar mensagens
+    msgs_stmt = select(Message).where(
+        Message.conversation_id == conversation_id
+    ).order_by(Message.sequence_number)
+    msgs_result = await db.execute(msgs_stmt)
+    messages = msgs_result.scalars().all()
+
+    if not messages:
+        return {"segments": [], "total_topics": 0, "main_topic": "", "topic_transitions": []}
+
+    # Montar texto da conversa
+    conversation_text = "\n".join([
+        f"[{m.timestamp}] {m.sender}: {m.original_text or m.transcription or m.description or ''}"
+        for m in messages if (m.original_text or m.transcription or m.description)
+    ])
+
+    if not conversation_text.strip():
+        return {"segments": [], "total_topics": 0, "main_topic": "", "topic_transitions": []}
+
+    from app.services.topic_segmentation import TopicSegmentationService
+    from app.dependencies import get_claude_service
+    claude = get_claude_service()
+    topic_service = TopicSegmentationService(claude)
+
+    result = await topic_service.segment_conversation(
+        conversation_text=conversation_text,
+        participants=conv.participants if hasattr(conv, 'participants') else None,
+    )
+    return result

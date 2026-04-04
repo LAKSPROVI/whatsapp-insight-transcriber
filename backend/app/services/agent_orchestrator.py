@@ -14,6 +14,7 @@ from enum import Enum
 from app.exceptions import ProcessingError, APIError
 from app.logging import get_logger, new_span
 from app.logging.error_advisor import get_error_suggestion
+from app.metrics import set_active_agents, set_processing_queue_depth
 
 logger = get_logger(__name__)
 
@@ -295,6 +296,7 @@ class AgentOrchestrator:
         self.claude_service = claude_service
         self.agents: List[AIAgent] = []
         self.job_queue: asyncio.PriorityQueue = asyncio.PriorityQueue()
+        self._redis_queue = None  # RedisJobQueue (lazy init)
         self.results: Dict[str, Optional[AgentResult]] = {}
         self._results_timestamps: Dict[str, float] = {}  # TTL para limpeza
         self._running = False
@@ -307,17 +309,36 @@ class AgentOrchestrator:
 
         logger.info(f"Orquestrador inicializado com {max_agents} agentes")
 
+    async def _init_redis_queue(self):
+        """Tenta inicializar fila Redis Streams para persist\u00eancia de jobs."""
+        try:
+            from app.services.redis_job_queue import get_job_queue
+            self._redis_queue = await get_job_queue()
+            if self._redis_queue and self._redis_queue.is_available:
+                logger.info("orchestrator.redis_queue.connected")
+            else:
+                self._redis_queue = None
+                logger.info("orchestrator.redis_queue.unavailable", fallback="in-memory PriorityQueue")
+        except Exception as e:
+            self._redis_queue = None
+            logger.warning(f"orchestrator.redis_queue.init_failed: {e}")
+
     def _initialize_agents(self):
         """Cria todos os agentes"""
         self.agents = [
             AIAgent(f"agent-{i+1:02d}", self.claude_service)
             for i in range(self.max_agents)
         ]
+        set_active_agents(0)
+        set_processing_queue_depth(0)
 
     async def start(self):
         """Inicia todos os workers dos agentes"""
         if self._running:
             return
+
+        # Tentar inicializar Redis queue
+        await self._init_redis_queue()
 
         self._running = True
         self._workers = [
@@ -342,7 +363,16 @@ class AgentOrchestrator:
     async def submit_job(self, job: AgentJob) -> str:
         """Submete um job para processamento."""
         self._job_counter += 1
+
+        # Persistir no Redis se dispon\u00edvel
+        if self._redis_queue and self._redis_queue.is_available:
+            await self._redis_queue.enqueue(
+                {"job_id": job.job_id, "job_type": job.job_type.value, "conversation_id": job.conversation_id},
+                priority=job.priority,
+            )
+
         await self.job_queue.put((job.priority, self._job_counter, job))
+        set_processing_queue_depth(self.job_queue.qsize())
         logger.debug(f"Job {job.job_id[:8]}... ({job.job_type}) adicionado à fila (prioridade: {job.priority})")
         return job.job_id
 
@@ -414,15 +444,18 @@ class AgentOrchestrator:
                         self.job_queue.get(),
                         timeout=1.0
                     )
+                    set_processing_queue_depth(self.job_queue.qsize())
                 except asyncio.TimeoutError:
                     continue
 
                 # Sentinel para parar
                 if job is None:
                     self.job_queue.task_done()
+                    set_processing_queue_depth(self.job_queue.qsize())
                     break
 
                 # Processar o job
+                set_active_agents(sum(1 for a in self.agents if a.is_busy) + 1)
                 result = await agent.process(job)
                 self.results[job.job_id] = result
                 self._results_timestamps[job.job_id] = time.time()
@@ -441,6 +474,8 @@ class AgentOrchestrator:
                         logger.error(f"Erro no callback do job {job.job_id[:8]}...: {e}")
 
                 self.job_queue.task_done()
+                set_processing_queue_depth(self.job_queue.qsize())
+                set_active_agents(sum(1 for a in self.agents if a.is_busy))
 
             except asyncio.CancelledError:
                 break

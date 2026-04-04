@@ -61,13 +61,12 @@ class PDFExporter:
         self,
         conversation: Conversation,
         messages: List[Message],
-        options: Dict[str, bool] = None,
+        options: Optional[Dict[str, bool]] = None,
     ) -> bytes:
         """Gera o PDF e retorna como bytes"""
         start_time = time.time()
         logger.info(
-            "export_pdf_started",
-            event="export.pdf.started",
+            "export.pdf.started",
             conversation_id=conversation.id,
         )
         try:
@@ -326,12 +325,10 @@ class PDFExporter:
         buffer.close()
         duration_ms = round((time.time() - start_time) * 1000, 2)
         logger.info(
-            "export_pdf_completed",
-            event="export.pdf.completed",
+            "export.pdf.completed",
             conversation_id=conversation.id,
-            file_size_bytes=len(content),
-            pages=len(messages),
             duration_ms=duration_ms,
+            size_bytes=len(content),
         )
         return content
 
@@ -343,15 +340,11 @@ class DOCXExporter:
         self,
         conversation: Conversation,
         messages: List[Message],
-        options: Dict[str, bool] = None,
+        options: Optional[Dict[str, bool]] = None,
     ) -> bytes:
         """Gera o DOCX e retorna como bytes"""
         start_time = time.time()
-        logger.info(
-            "export_docx_started",
-            event="export.docx.started",
-            conversation_id=conversation.id,
-        )
+        logger.info("export.docx.started", conversation_id=conversation.id)
         try:
             from docx import Document
             from docx.shared import Pt, Cm, RGBColor
@@ -522,11 +515,10 @@ class DOCXExporter:
         buffer.close()
         duration_ms = round((time.time() - start_time) * 1000, 2)
         logger.info(
-            "export_docx_completed",
-            event="export.docx.completed",
+            "export.docx.completed",
             conversation_id=conversation.id,
-            file_size_bytes=len(content),
             duration_ms=duration_ms,
+            size_bytes=len(content),
         )
         return content
 
@@ -538,15 +530,11 @@ class ExcelExporter:
         self,
         conversation: Conversation,
         messages: List[Message],
-        options: Dict[str, bool] = None,
+        options: Optional[Dict[str, bool]] = None,
     ) -> bytes:
         """Gera o XLSX e retorna como bytes"""
         start_time = time.time()
-        logger.info(
-            "export_xlsx_started",
-            event="export.xlsx.started",
-            conversation_id=conversation.id,
-        )
+        logger.info("export.xlsx.started", conversation_id=conversation.id)
         try:
             from openpyxl import Workbook
             from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
@@ -690,11 +678,10 @@ class ExcelExporter:
         buffer.close()
         duration_ms = round((time.time() - start_time) * 1000, 2)
         logger.info(
-            "export_xlsx_completed",
-            event="export.xlsx.completed",
+            "export.xlsx.completed",
             conversation_id=conversation.id,
-            file_size_bytes=len(content),
             duration_ms=duration_ms,
+            size_bytes=len(content),
         )
         return content
 
@@ -706,7 +693,7 @@ class CSVExporter:
         self,
         conversation: Conversation,
         messages: List[Message],
-        options: Dict[str, bool] = None,
+        options: Optional[Dict[str, bool]] = None,
     ) -> bytes:
         """Gera o CSV e retorna como bytes"""
         import csv
@@ -748,7 +735,7 @@ class HTMLExporter:
         self,
         conversation: Conversation,
         messages: List[Message],
-        options: Dict[str, bool] = None,
+        options: Optional[Dict[str, bool]] = None,
     ) -> bytes:
         """Gera o HTML e retorna como bytes"""
         opts = options or {}
@@ -906,7 +893,7 @@ class JSONExporter:
         self,
         conversation: Conversation,
         messages: List[Message],
-        options: Dict[str, bool] = None,
+        options: Optional[Dict[str, bool]] = None,
     ) -> bytes:
         """Gera o JSON e retorna como bytes"""
         import json

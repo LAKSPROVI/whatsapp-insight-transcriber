@@ -17,6 +17,20 @@ class Settings(BaseSettings):
     MAX_TOKENS: int = 4096
     TEMPERATURE: float = 0.3
 
+    # ─── Multi-Model Strategy ────────────────────────────────────
+    CLAUDE_MODEL_CHAT: str = "claude-opus-4-6"         # RAG chat (needs best quality)
+    CLAUDE_MODEL_ANALYSIS: str = "claude-sonnet-4-20250514"  # Sentiment, summary, contradictions
+    CLAUDE_MODEL_SIMPLE: str = "claude-haiku-4-20250414"     # Classification, formatting, keywords
+
+    # ─── Anthropic Direct Fallback ───────────────────────────────
+    ANTHROPIC_DIRECT_URL: str = "https://api.anthropic.com"  # Fallback if proxy is down
+
+    # ─── Data Retention ──────────────────────────────────────────
+    DATA_RETENTION_DAYS: int = 90  # Auto-delete conversations after N days (0 = disabled)
+
+    # ─── Prompt Caching ──────────────────────────────────────────
+    PROMPT_CACHE_ENABLED: bool = True
+
     # ─── Agentes ──────────────────────────────────────────────
     MAX_AGENTS: int = 20
     AGENT_TIMEOUT: int = 300  # seconds
@@ -24,13 +38,14 @@ class Settings(BaseSettings):
     # ─── Upload e Armazenamento ───────────────────────────────
     UPLOAD_DIR: Path = Path("uploads")
     MEDIA_DIR: Path = Path("media")
-    MAX_UPLOAD_SIZE: int = 100 * 1024 * 1024  # 100MB
-    MAX_UPLOAD_SIZE_MB: int = 100
+    MAX_UPLOAD_SIZE: int = 500 * 1024 * 1024  # 500MB
+    MAX_UPLOAD_SIZE_MB: int = 500
     MAX_ZIP_FILES: int = 5000
     MAX_ZIP_UNCOMPRESSED_SIZE: int = 1024 * 1024 * 1024  # 1GB
 
     # ─── Database ─────────────────────────────────────────────
     DATABASE_URL: str = "sqlite+aiosqlite:///./whatsapp_insight.db"
+    RUN_DB_MIGRATIONS_ON_STARTUP: bool = True
 
     # ─── App ──────────────────────────────────────────────────
     APP_NAME: str = "WhatsApp Insight Transcriber"
@@ -58,6 +73,7 @@ class Settings(BaseSettings):
 
     # ─── Redis / Cache ───────────────────────────────────────────
     REDIS_URL: Optional[str] = "redis://redis:6379/0"
+    REDIS_PASSWORD: str = ""
     CACHE_TTL_SECONDS: int = 86400  # 24h
     CACHE_ENABLED: bool = True
 
@@ -67,6 +83,9 @@ class Settings(BaseSettings):
     LOG_REDACTION_ENABLED: bool = True
     LOG_TRACING_ENABLED: bool = True
     LOG_ERROR_ADVISOR: bool = True
+
+    # ─── Observability ───────────────────────────────────────────
+    ENABLE_METRICS: bool = True
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", case_sensitive=True)
 

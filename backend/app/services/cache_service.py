@@ -10,6 +10,7 @@ from typing import Any, Optional, Callable
 
 from app.logging import get_logger
 from app.logging.error_advisor import get_error_suggestion
+from app.metrics import track_cache_operation
 
 logger = get_logger(__name__)
 
@@ -94,12 +95,14 @@ async def get_cached_result(key: str) -> Optional[Any]:
     redis = await _get_redis()
     if redis is None:
         _stats["misses"] += 1
+        track_cache_operation("get", "miss")
         return None
 
     try:
         value = await redis.get(key)
         if value is not None:
             _stats["hits"] += 1
+            track_cache_operation("get", "hit")
             ttl_remaining = await redis.ttl(key)
             key_pattern = key.split(":")[0] if ":" in key else key
             logger.info(
@@ -110,6 +113,7 @@ async def get_cached_result(key: str) -> Optional[Any]:
             return json.loads(value)
         else:
             _stats["misses"] += 1
+            track_cache_operation("get", "miss")
             key_pattern = key.split(":")[0] if ":" in key else key
             logger.info(
                 "cache.redis.miss",
@@ -118,6 +122,7 @@ async def get_cached_result(key: str) -> Optional[Any]:
             return None
     except Exception as e:
         _stats["errors"] += 1
+        track_cache_operation("get", "error")
         logger.error(
             "cache.redis.error",
             operation="get",
@@ -133,6 +138,7 @@ async def set_cached_result(key: str, value: Any, ttl: Optional[int] = None) -> 
     """
     redis = await _get_redis()
     if redis is None:
+        track_cache_operation("set", "error")
         return False
 
     try:
@@ -142,10 +148,12 @@ async def set_cached_result(key: str, value: Any, ttl: Optional[int] = None) -> 
         serialized = json.dumps(value, ensure_ascii=False, default=str)
         await redis.set(key, serialized, ex=effective_ttl)
         _stats["sets"] += 1
+        track_cache_operation("set", "success")
         logger.debug(f"Cache SET: {key[:50]}... (TTL={effective_ttl}s)")
         return True
     except Exception as e:
         _stats["errors"] += 1
+        track_cache_operation("set", "error")
         logger.error(
             "cache.redis.error",
             operation="set",
@@ -158,14 +166,17 @@ async def invalidate_cache(key: str) -> bool:
     """Remove uma chave do cache."""
     redis = await _get_redis()
     if redis is None:
+        track_cache_operation("delete", "error")
         return False
 
     try:
         await redis.delete(key)
+        track_cache_operation("delete", "success")
         logger.debug(f"Cache INVALIDATED: {key[:50]}...")
         return True
     except Exception as e:
         _stats["errors"] += 1
+        track_cache_operation("delete", "error")
         logger.warning(f"Erro ao invalidar cache ({key[:50]}...): {e}")
         return False
 

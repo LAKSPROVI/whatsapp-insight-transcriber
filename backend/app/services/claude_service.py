@@ -22,6 +22,8 @@ from app.logging import get_logger, new_span
 from app.logging.error_advisor import get_error_suggestion
 from app.services.cache_service import cached, make_cache_key, get_cached_result, set_cached_result
 
+from app.services.pii_redactor import redact_conversation_text, redact_pii
+
 logger = get_logger(__name__)
 
 # ─── Timeouts por tipo de operação (segundos) ────────────────────────────────
@@ -117,9 +119,10 @@ class ClaudeService:
         **kwargs,
     ) -> Any:
         """
-        Wrapper com retry, exponential backoff e rate limit handling.
+        Wrapper com retry, exponential backoff, model fallback e rate limit handling.
         """
         timeout = OPERATION_TIMEOUTS.get(operation, OPERATION_TIMEOUTS["default"])
+        current_model = kwargs.get("model", self.model)
 
         async with self._api_semaphore:
             last_error = None
@@ -135,6 +138,11 @@ class ClaudeService:
                             operation=operation,
                             attempt=attempt + 1,
                         )
+
+                        # Apply prompt caching if enabled
+                        if settings.PROMPT_CACHE_ENABLED and "messages" in kwargs:
+                            kwargs["messages"] = self._apply_prompt_caching(kwargs["messages"])
+
                         result = await asyncio.wait_for(
                             self.client.messages.create(**kwargs),
                             timeout=timeout,
@@ -151,18 +159,32 @@ class ClaudeService:
                     return result
 
                 except asyncio.TimeoutError:
-                    last_error = f"Timeout ({timeout}s) na operação '{operation}'"
+                    last_error = f"Timeout ({timeout}s) na opera\u00e7\u00e3o '{operation}'"
                     logger.warning(
                         f"Timeout na chamada API (tentativa {attempt + 1}/{MAX_RETRIES}): {operation}",
                         extra={"operation": operation, "attempt": attempt + 1, "timeout": timeout},
                     )
+                    # Try fallback model on timeout
+                    fallback = self._get_fallback_model(kwargs.get("model", self.model))
+                    if fallback and attempt < MAX_RETRIES - 1:
+                        logger.info("ai.model_fallback", from_model=kwargs.get("model"), to_model=fallback, reason="timeout")
+                        kwargs["model"] = fallback
 
                 except anthropic.RateLimitError as e:
                     self._rate_limit_hits += 1
+                    # Try fallback model on rate limit
+                    fallback = self._get_fallback_model(kwargs.get("model", self.model))
+                    if fallback and attempt < MAX_RETRIES - 1:
+                        logger.info("ai.model_fallback", from_model=kwargs.get("model"), to_model=fallback, reason="rate_limit")
+                        kwargs["model"] = fallback
+                        self._total_retries += 1
+                        await asyncio.sleep(RATE_LIMIT_INITIAL_WAIT)
+                        continue
+
                     # Rate limit: esperar mais tempo com backoff
                     wait_time = RATE_LIMIT_INITIAL_WAIT * (BACKOFF_MULTIPLIER ** attempt)
 
-                    # Tentar extrair retry-after do header se disponível
+                    # Tentar extrair retry-after do header se dispon\u00edvel
                     retry_after = getattr(e, "retry_after", None)
                     if retry_after:
                         wait_time = max(wait_time, float(retry_after))
@@ -185,7 +207,7 @@ class ClaudeService:
                     else:
                         self._total_errors += 1
                         raise RateLimitError(
-                            detail="Limite de requisições da API excedido. Tente novamente em alguns minutos.",
+                            detail="Limite de requisi\u00e7\u00f5es da API excedido. Tente novamente em alguns minutos.",
                             context={
                                 "operation": operation,
                                 "attempts": attempt + 1,
@@ -197,7 +219,7 @@ class ClaudeService:
                     status = getattr(e, "status_code", 0)
                     last_error = f"API status {status}: {str(e)}"
 
-                    # Erros permanentes (ex: modelo não suporta imagem) — não fazer retry
+                    # Erros permanentes (ex: modelo n\u00e3o suporta imagem) \u2014 n\u00e3o fazer retry
                     error_msg = str(e).lower()
                     if any(phrase in error_msg for phrase in [
                         "does not support image", "image input", "cannot read image",
@@ -213,8 +235,12 @@ class ClaudeService:
                         )
                         raise
 
-                    # Erros 5xx são transientes
+                    # Erros 5xx s\u00e3o transientes - try fallback model
                     if status >= 500 and attempt < MAX_RETRIES - 1:
+                        fallback = self._get_fallback_model(kwargs.get("model", self.model))
+                        if fallback:
+                            logger.info("ai.model_fallback", from_model=kwargs.get("model"), to_model=fallback, reason=f"http_{status}")
+                            kwargs["model"] = fallback
                         wait_time = BACKOFF_BASE * (BACKOFF_MULTIPLIER ** attempt)
                         logger.warning(
                             "ai.api_call.failed",
@@ -234,11 +260,11 @@ class ClaudeService:
                         )
 
                 except anthropic.APIConnectionError as e:
-                    last_error = f"Erro de conexão: {str(e)}"
+                    last_error = f"Erro de conex\u00e3o: {str(e)}"
                     if attempt < MAX_RETRIES - 1:
                         wait_time = BACKOFF_BASE * (BACKOFF_MULTIPLIER ** attempt)
                         logger.warning(
-                            f"Erro de conexão API (tentativa {attempt + 1}/{MAX_RETRIES}). "
+                            f"Erro de conex\u00e3o API (tentativa {attempt + 1}/{MAX_RETRIES}). "
                             f"Retry em {wait_time:.1f}s...",
                             extra={"operation": operation, "attempt": attempt + 1},
                         )
@@ -257,34 +283,75 @@ class ClaudeService:
                         **get_error_suggestion(exc=e),
                     )
 
-                    # Erros permanentes de imagem — não fazer retry
+                    # Erros permanentes de imagem \u2014 n\u00e3o fazer retry
                     error_lower = str(e).lower()
                     if any(phrase in error_lower for phrase in [
                         "does not support image", "cannot read image",
                         "image_not_supported", "not support image",
                     ]):
                         raise APIError(
-                            detail=f"Modelo não suporta input de imagem: {str(e)}",
+                            detail=f"Modelo n\u00e3o suporta input de imagem: {str(e)}",
                             context={"operation": operation, "attempts": attempt + 1},
                         )
 
                     if attempt < MAX_RETRIES - 1:
+                        # Try fallback model for generic errors
+                        fallback = self._get_fallback_model(kwargs.get("model", self.model))
+                        if fallback:
+                            logger.info("ai.model_fallback", from_model=kwargs.get("model"), to_model=fallback, reason="error")
+                            kwargs["model"] = fallback
                         wait_time = BACKOFF_BASE * (BACKOFF_MULTIPLIER ** attempt)
                         await asyncio.sleep(wait_time)
                         self._total_retries += 1
                         continue
                     else:
                         raise APIError(
-                            detail=f"Erro na comunicação com serviço de IA: {str(e)}",
+                            detail=f"Erro na comunica\u00e7\u00e3o com servi\u00e7o de IA: {str(e)}",
                             context={"operation": operation, "attempts": attempt + 1},
                         )
 
             # Todas as tentativas falharam
             self._total_errors += 1
             raise APIError(
-                detail=f"Falha após {MAX_RETRIES} tentativas: {last_error}",
+                detail=f"Falha ap\u00f3s {MAX_RETRIES} tentativas: {last_error}",
                 context={"operation": operation, "attempts": MAX_RETRIES},
             )
+
+    @staticmethod
+    def _apply_prompt_caching(messages: list) -> list:
+        """
+        Aplica cache_control nos blocos de conte\u00fado grandes para habilitar
+        Anthropic prompt caching (beta). Blocos com >1024 tokens s\u00e3o marcados
+        como ephemeral para reutiliza\u00e7\u00e3o em chamadas subsequentes.
+        """
+        cached_messages = []
+        for msg in messages:
+            if isinstance(msg.get("content"), str) and len(msg["content"]) > 4000:
+                cached_messages.append({
+                    "role": msg["role"],
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": msg["content"],
+                            "cache_control": {"type": "ephemeral"},
+                        }
+                    ],
+                })
+            elif isinstance(msg.get("content"), list):
+                # Already structured - add cache_control to large text blocks
+                new_content = []
+                for block in msg["content"]:
+                    if block.get("type") == "text" and len(block.get("text", "")) > 4000:
+                        new_content.append({
+                            **block,
+                            "cache_control": {"type": "ephemeral"},
+                        })
+                    else:
+                        new_content.append(block)
+                cached_messages.append({"role": msg["role"], "content": new_content})
+            else:
+                cached_messages.append(msg)
+        return cached_messages
 
     def get_stats(self) -> Dict[str, Any]:
         """Retorna estatísticas de uso da API."""
@@ -314,7 +381,7 @@ class ClaudeService:
             if transcription_raw:
                 message = await self._call_claude_with_retry(
                     operation="transcribe_audio",
-                    model=self.model,
+                    model=self.get_model_for_operation("transcribe_audio"),
                     max_tokens=2048,
                     messages=[{
                         "role": "user",
@@ -349,7 +416,7 @@ Metadados do arquivo:
 
         message = await self._call_claude_with_retry(
             operation="transcribe_audio",
-            model=self.model,
+            model=self.get_model_for_operation("transcribe_audio"),
             max_tokens=self.max_tokens,
             messages=[
                 {
@@ -390,10 +457,10 @@ Responda com: [Áudio recebido - transcrição via Whisper indisponível. {metad
             transcription_raw = None
 
         if transcription_raw:
-            message = await self._call_claude_with_retry(
-                operation="transcribe_audio",
-                model=self.model,
-                max_tokens=2048,
+                message = await self._call_claude_with_retry(
+                    operation="transcribe_audio",
+                    model=self.get_model_for_operation("transcribe_audio"),
+                    max_tokens=2048,
                 messages=[{
                     "role": "user",
                     "content": f"""Corrija e formate esta transcrição de áudio do WhatsApp:
@@ -508,7 +575,7 @@ Responda apenas com a transcrição corrigida."""
 
         message = await self._call_claude_with_retry(
             operation="describe_image",
-            model=self.model,
+            model=self.get_model_for_operation("describe_image"),
             max_tokens=2048,
             messages=[{
                 "role": "user",
@@ -642,8 +709,8 @@ Responda APENAS com o JSON, sem texto adicional."""
         duration = media_metadata.get("duration_formatted", "desconhecida") if media_metadata else "desconhecida"
 
         message = await self._call_claude_with_retry(
-            operation="transcribe_video",
-            model=self.model,
+            operation="describe_image",
+            model=self.get_model_for_operation("describe_image"),
             max_tokens=2048,
             messages=[{
                 "role": "user",
@@ -766,13 +833,13 @@ Responda APENAS com o JSON."""
         logger.debug("Cache MISS para analyze_sentiment — chamando API")
         message = await self._call_claude_with_retry(
             operation="analyze_sentiment",
-            model=self.model,
+            model=self.get_model_for_operation("analyze_sentiment"),
             max_tokens=512,
             messages=[{
                 "role": "user",
                 "content": f"""Analise o sentimento desta mensagem de WhatsApp e responda em JSON:
 
-MENSAGEM: "{text}"
+MENSAGEM: "{redact_pii(text)}"
 {f'CONTEXTO: {context}' if context else ''}
 
 Responda com JSON:
@@ -821,14 +888,14 @@ Responda APENAS com o JSON."""
 
         message = await self._call_claude_with_retry(
             operation="generate_summary",
-            model=self.model,
+            model=self.get_model_for_operation("generate_summary"),
             max_tokens=2048,
             messages=[{
                 "role": "user",
-                "content": f"""Analise esta conversa do WhatsApp entre {participants_str} e gere um relatório completo em JSON:
+                "content": f"""Analise esta conversa do WhatsApp entre {participants_str} e gere um relat\u00f3rio completo em JSON:
 
 CONVERSA:
-{conversation_text[:limit]}  
+{redact_conversation_text(conversation_text[:limit])}
 
 Responda com JSON:
 {{
@@ -886,13 +953,13 @@ Responda APENAS com o JSON."""
 
         message = await self._call_claude_with_retry(
             operation="detect_contradictions",
-            model=self.model,
+            model=self.get_model_for_operation("detect_contradictions"),
             max_tokens=2048,
             messages=[{
                 "role": "user",
-                "content": f"""Analise esta conversa do WhatsApp em busca de contradições, inconsistências ou mudanças de posição:
+                "content": f"""Analise esta conversa do WhatsApp em busca de contradi\u00e7\u00f5es, inconsist\u00eancias ou mudan\u00e7as de posi\u00e7\u00e3o:
 
-{conversation_text[:limit]}
+{redact_conversation_text(conversation_text[:limit])}
 
 Identifique e liste em JSON:
 {{
@@ -943,13 +1010,13 @@ Responda APENAS com o JSON."""
 
         message = await self._call_claude_with_retry(
             operation="extract_keywords",
-            model=self.model,
+            model=self.get_model_for_operation("extract_keywords"),
             max_tokens=1024,
             messages=[{
                 "role": "user",
-                "content": f"""Extraia palavras-chave e tópicos desta conversa do WhatsApp:
+                "content": f"""Extraia palavras-chave e t\u00f3picos desta conversa do WhatsApp:
 
-{conversation_text[:limit]}
+{redact_conversation_text(conversation_text[:limit])}
 
 Responda em JSON:
 {{
@@ -997,7 +1064,7 @@ Responda APENAS com o JSON."""
 Você tem acesso à transcrição completa de uma conversa e deve responder perguntas sobre ela.
 
 TRANSCRIÇÃO DA CONVERSA:
-{conversation_context[:limit]}
+{redact_conversation_text(conversation_context[:limit])}
 
 Responda sempre em Português do Brasil, de forma clara e objetiva.
 Quando referenciar momentos específicos da conversa, cite a data/hora e o participante."""
@@ -1015,7 +1082,7 @@ Quando referenciar momentos específicos da conversa, cite a data/hora e o parti
 
         try:
             async with self.client.messages.stream(
-                model=self.model,
+                model=self.get_model_for_operation("chat"),
                 max_tokens=2048,
                 system=system_prompt,
                 messages=messages,

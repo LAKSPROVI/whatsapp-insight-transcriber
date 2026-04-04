@@ -27,6 +27,7 @@ from app.services.whatsapp_parser import WhatsAppParser, ParsedMessage
 from app.services.media_metadata import MediaMetadataExtractor
 from app.services.agent_orchestrator import AgentOrchestrator, AgentJob, JobType
 from app.services.claude_service import ClaudeService
+from app.metrics import increment_conversations_processed
 
 logger = get_logger(__name__)
 
@@ -307,6 +308,28 @@ class ConversationProcessor:
                 conversation_id=conversation.id,
                 failed_steps=failed_steps or None,
             )
+
+            # Record custody chain event for processing completion
+            try:
+                from app.services.custody_service import CustodyChainService
+                custody = CustodyChainService(self.db)
+                await custody.add_event(
+                    conversation_id=str(conversation.id),
+                    event_type="PROCESSED",
+                    actor_id=conversation.owner_id or "system",
+                    description=f"Processamento concluido. {conversation.total_messages} mensagens, {conversation.total_media} midias.",
+                    evidence={
+                        "total_messages": conversation.total_messages,
+                        "total_media": conversation.total_media,
+                        "participants": conversation.participants,
+                        "failed_steps": failed_steps or [],
+                    },
+                )
+                await self.db.commit()
+            except Exception as e:
+                logger.warning(f"Custody chain update failed (non-blocking): {e}")
+
+            increment_conversations_processed("completed" if not failed_steps else "partial_failure")
             return conversation
 
         except (ParserError, ProcessingError, APIError) as e:
@@ -323,6 +346,7 @@ class ConversationProcessor:
                     "status": ProcessingStatus.FAILED,
                     "progress_message": f"Erro na etapa '{step}': {str(e)}",
                 })
+            increment_conversations_processed("failed")
             raise
 
         except Exception as e:
@@ -338,6 +362,7 @@ class ConversationProcessor:
                     "status": ProcessingStatus.FAILED,
                     "progress_message": f"Erro: {str(e)}",
                 })
+            increment_conversations_processed("failed")
             raise ProcessingError(
                 detail=f"Erro inesperado no processamento: {str(e)}",
                 context={"session_id": session_id, "step": step},

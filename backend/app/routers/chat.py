@@ -12,14 +12,14 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc
 
-from app.database import get_db, AsyncSessionLocal
+from app.database import get_db
 from app.models import Conversation, Message, ChatMessage, ProcessingStatus
 from app.schemas import (
     ChatRequest, ChatResponse, ChatHistoryResponse,
     ConversationAnalytics, ParticipantStats
 )
 from app.dependencies import get_claude_service
-from app.auth import get_current_user, UserInfo
+from app.auth import apply_owner_filter, ensure_owner_access, get_current_user, UserInfo
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -72,12 +72,14 @@ async def send_chat_message(
     - **401 Unauthorized**: Token ausente ou inválido.
     """
     # Verificar se conversa existe e está concluída
-    stmt = select(Conversation).where(Conversation.id == conversation_id)
+    stmt = apply_owner_filter(
+        select(Conversation).where(Conversation.id == conversation_id),
+        Conversation,
+        current_user,
+    )
     result = await db.execute(stmt)
     conv = result.scalar_one_or_none()
-
-    if not conv:
-        raise HTTPException(404, "Conversa não encontrada")
+    ensure_owner_access(conv, current_user)
 
     if conv.status != ProcessingStatus.COMPLETED:
         raise HTTPException(400, "A conversa ainda não foi completamente processada")
@@ -119,16 +121,15 @@ async def send_chat_message(
             response_text.append(chunk)
             yield f"data: {chunk}\n\n"
 
-        # Salvar resposta completa usando sessão DB independente
+        # Salvar resposta completa usando a sessão já vinculada à request
         full_response = "".join(response_text)
-        async with AsyncSessionLocal() as session:
-            assistant_msg = ChatMessage(
-                conversation_id=conversation_id,
-                role="assistant",
-                content=full_response,
-            )
-            session.add(assistant_msg)
-            await session.commit()
+        assistant_msg = ChatMessage(
+            conversation_id=conversation_id,
+            role="assistant",
+            content=full_response,
+        )
+        db.add(assistant_msg)
+        await db.commit()
 
         yield "data: [DONE]\n\n"
 
@@ -185,6 +186,15 @@ async def get_chat_history(
     **Erros possíveis:**
     - **401 Unauthorized**: Token ausente ou inválido.
     """
+    conv_stmt = apply_owner_filter(
+        select(Conversation).where(Conversation.id == conversation_id),
+        Conversation,
+        current_user,
+    )
+    conv_result = await db.execute(conv_stmt)
+    conv = conv_result.scalar_one_or_none()
+    ensure_owner_access(conv, current_user)
+
     stmt = (
         select(ChatMessage)
         .where(ChatMessage.conversation_id == conversation_id)
@@ -226,6 +236,15 @@ async def clear_chat_history(
     **Erros possíveis:**
     - **401 Unauthorized**: Token ausente ou inválido.
     """
+    conv_stmt = apply_owner_filter(
+        select(Conversation).where(Conversation.id == conversation_id),
+        Conversation,
+        current_user,
+    )
+    conv_result = await db.execute(conv_stmt)
+    conv = conv_result.scalar_one_or_none()
+    ensure_owner_access(conv, current_user)
+
     stmt = select(ChatMessage).where(ChatMessage.conversation_id == conversation_id)
     result = await db.execute(stmt)
     messages = result.scalars().all()
@@ -290,12 +309,14 @@ async def get_analytics(
     - **404 Not Found**: Conversa não encontrada.
     - **401 Unauthorized**: Token ausente ou inválido.
     """
-    stmt = select(Conversation).where(Conversation.id == conversation_id)
+    stmt = apply_owner_filter(
+        select(Conversation).where(Conversation.id == conversation_id),
+        Conversation,
+        current_user,
+    )
     result = await db.execute(stmt)
     conv = result.scalar_one_or_none()
-
-    if not conv:
-        raise HTTPException(404, "Conversa não encontrada")
+    ensure_owner_access(conv, current_user)
 
     # Buscar mensagens
     msg_stmt = (

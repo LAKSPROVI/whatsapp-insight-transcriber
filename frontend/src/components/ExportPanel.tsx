@@ -2,7 +2,10 @@
 
 import { useState } from "react";
 import { motion } from "framer-motion";
-import { FileDown, FileText, FileType2, Settings2, Loader2, CheckCircle2 } from "lucide-react";
+import {
+  FileDown, FileText, FileType2, Settings2, Loader2, CheckCircle2,
+  FileSpreadsheet, Code2, Globe, Database
+} from "lucide-react";
 import { useExportConversation } from "@/lib/queries";
 import type { ExportOptions } from "@/types";
 import { cn } from "@/lib/utils";
@@ -11,6 +14,21 @@ import toast from "react-hot-toast";
 interface ExportPanelProps {
   conversationId: string;
 }
+
+const FORMATS: {
+  value: ExportOptions["format"];
+  label: string;
+  desc: string;
+  icon: React.ReactNode;
+  color: string;
+}[] = [
+  { value: "pdf", label: "PDF", desc: "Adobe PDF", icon: <FileText className="w-5 h-5 text-red-400" />, color: "red" },
+  { value: "docx", label: "DOCX", desc: "Word Document", icon: <FileType2 className="w-5 h-5 text-blue-400" />, color: "blue" },
+  { value: "xlsx", label: "XLSX", desc: "Excel Spreadsheet", icon: <FileSpreadsheet className="w-5 h-5 text-green-400" />, color: "green" },
+  { value: "csv", label: "CSV", desc: "Dados tabulares", icon: <Database className="w-5 h-5 text-yellow-400" />, color: "yellow" },
+  { value: "html", label: "HTML", desc: "Página web", icon: <Globe className="w-5 h-5 text-orange-400" />, color: "orange" },
+  { value: "json", label: "JSON", desc: "Dados estruturados", icon: <Code2 className="w-5 h-5 text-purple-400" />, color: "purple" },
+];
 
 export function ExportPanel({ conversationId }: ExportPanelProps) {
   const [options, setOptions] = useState<ExportOptions>({
@@ -26,7 +44,6 @@ export function ExportPanel({ conversationId }: ExportPanelProps) {
 
   const handleExport = async () => {
     setExported(false);
-
     try {
       await exportMutation.mutateAsync({ conversationId, options });
       setExported(true);
@@ -51,32 +68,26 @@ export function ExportPanel({ conversationId }: ExportPanelProps) {
         <h3 className="font-semibold text-gray-200">Exportar Relatório</h3>
       </div>
 
-      {/* Format Selection */}
-      <fieldset className="grid grid-cols-2 gap-3">
+      {/* Format Selection - 3x2 grid */}
+      <fieldset className="grid grid-cols-3 gap-2">
         <legend className="sr-only">Formato de exportação</legend>
-        {(["pdf", "docx"] as const).map((fmt) => (
+        {FORMATS.map((fmt) => (
           <button
-            key={fmt}
-            onClick={() => setOptions((prev) => ({ ...prev, format: fmt }))}
-            aria-pressed={options.format === fmt}
-            aria-label={`Formato ${fmt.toUpperCase()}`}
+            key={fmt.value}
+            onClick={() => setOptions((prev) => ({ ...prev, format: fmt.value }))}
+            aria-pressed={options.format === fmt.value}
+            aria-label={`Formato ${fmt.label}`}
             className={cn(
-              "flex items-center gap-3 p-4 rounded-xl border-2 transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500",
-              options.format === fmt
+              "flex flex-col items-center gap-1.5 p-3 rounded-xl border-2 transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500",
+              options.format === fmt.value
                 ? "border-brand-500 bg-brand-500/10"
                 : "border-dark-400/30 bg-dark-700/30 hover:border-dark-300/30"
             )}
           >
-            {fmt === "pdf" ? (
-              <FileText className="w-6 h-6 text-red-400" aria-hidden="true" />
-            ) : (
-              <FileType2 className="w-6 h-6 text-blue-400" aria-hidden="true" />
-            )}
-            <div className="text-left">
-              <p className="font-semibold text-sm text-white">{fmt.toUpperCase()}</p>
-              <p className="text-xs text-gray-500">
-                {fmt === "pdf" ? "Adobe PDF" : "Word Document"}
-              </p>
+            {fmt.icon}
+            <div className="text-center">
+              <p className="font-semibold text-xs text-white">{fmt.label}</p>
+              <p className="text-[9px] text-gray-500">{fmt.desc}</p>
             </div>
           </button>
         ))}
@@ -90,33 +101,16 @@ export function ExportPanel({ conversationId }: ExportPanelProps) {
         </div>
 
         {[
-          {
-            key: "include_summary" as const,
-            label: "Resumo executivo",
-            desc: "Incluir análise e resumo da conversa",
-          },
-          {
-            key: "include_media_descriptions" as const,
-            label: "Descrições de mídia",
-            desc: "Transcrições de áudio, descrições de imagens e vídeos",
-          },
-          {
-            key: "include_sentiment_analysis" as const,
-            label: "Análise de sentimento",
-            desc: "Indicadores de sentimento por mensagem",
-          },
-          {
-            key: "include_statistics" as const,
-            label: "Estatísticas",
-            desc: "Tabelas com dados da conversa",
-          },
+          { key: "include_summary" as const, label: "Resumo executivo", desc: "Incluir análise e resumo da conversa" },
+          { key: "include_media_descriptions" as const, label: "Descrições de mídia", desc: "Transcrições de áudio, descrições de imagens e vídeos" },
+          { key: "include_sentiment_analysis" as const, label: "Análise de sentimento", desc: "Indicadores de sentimento por mensagem" },
+          { key: "include_statistics" as const, label: "Estatísticas", desc: "Tabelas com dados da conversa" },
         ].map((opt) => (
           <button
             key={opt.key}
             onClick={() => toggle(opt.key)}
             role="switch"
             aria-checked={!!options[opt.key]}
-            aria-label={`${opt.label}: ${options[opt.key] ? "ativado" : "desativado"}`}
             className="w-full flex items-center gap-3 p-3 rounded-xl bg-dark-700/30 hover:bg-dark-600/40 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
           >
             <div
@@ -148,7 +142,6 @@ export function ExportPanel({ conversationId }: ExportPanelProps) {
         whileHover={{ scale: 1.02 }}
         whileTap={{ scale: 0.98 }}
         aria-busy={isExporting}
-        aria-label={isExporting ? `Gerando ${options.format.toUpperCase()}...` : `Exportar como ${options.format.toUpperCase()}`}
         className={cn(
           "w-full flex items-center justify-center gap-2 py-3.5 rounded-xl font-semibold transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500",
           exported
