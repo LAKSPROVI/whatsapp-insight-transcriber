@@ -122,6 +122,7 @@ class TestUpload:
             mock_settings.MAX_ZIP_UNCOMPRESSED_SIZE = 1024 * 1024 * 1024
             mock_settings.UPLOAD_DIR = tmp_path
             mock_settings.MEDIA_DIR = tmp_path / "media"
+            mock_settings.DATA_RETENTION_DAYS = 90
 
             resp = await client.post(
                 "/api/conversations/upload",
