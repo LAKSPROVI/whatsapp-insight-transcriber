@@ -10,7 +10,7 @@ class TestHealthCheck:
     async def test_health_basic(self, client):
         """GET /api/health retorna status healthy."""
         response = await client.get("/api/health")
-        assert response.status_code == 200
+        assert response.status_code == 200, f"Expected 200, got {response.status_code}: {response.text}"
         data = response.json()
         assert data["status"] == "healthy"
         assert "app" in data
