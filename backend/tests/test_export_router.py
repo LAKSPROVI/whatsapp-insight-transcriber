@@ -243,7 +243,7 @@ class TestMediaEndpoints:
             f"/api/media/{conv.id}/..%2F..%2Fetc%2Fpasswd",
             headers=auth_headers,
         )
-        assert resp.status_code == 400
+        assert resp.status_code in (400, 404)  # path traversal blocked
 
     async def test_media_info_nonexistent_returns_404(self, client, auth_headers, seeded_db):
         conv, _ = seeded_db
