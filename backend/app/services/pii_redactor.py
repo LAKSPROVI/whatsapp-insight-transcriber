@@ -22,8 +22,8 @@ _PII_PATTERNS = [
     (re.compile(r"\b\d{1,2}\.?\d{3}\.?\d{3}-?[0-9Xx]\b"), None),  # Skip - too many false positives
     # Telefones brasileiros completos
     (re.compile(r"\+?55\s?\(?\d{2}\)?\s?\d{4,5}[-\s]?\d{4}"), "[PHONE_REDACTED]"),
-    # Telefones com DDD
-    (re.compile(r"\(?\d{2}\)?\s?9?\d{4}[-\s]?\d{4}"), "[PHONE_REDACTED]"),
+    # Telefones com DDD (require parentheses or explicit formatting)
+    (re.compile(r"(?:\+\d{1,3}\s?)?\(?\d{2}\)\s?9?\d{4}[-\s]?\d{4}"), "[PHONE_REDACTED]"),
     # Email
     (re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}"), "[EMAIL_REDACTED]"),
     # Números de cartão de crédito

@@ -3,8 +3,10 @@ Módulo de autenticação JWT para o WhatsApp Insight Transcriber
 Persistência em banco de dados SQLAlchemy.
 """
 import logging
+import time
+import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Optional, Any
+from typing import Dict, Optional, Any, Tuple
 
 from fastapi import Depends, HTTPException, Query, Request, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -28,7 +30,7 @@ security = HTTPBearer()
 
 class LoginRequest(BaseModel):
     username: str = Field(..., min_length=3, max_length=50)
-    password: str = Field(..., min_length=6, max_length=128)
+    password: str = Field(..., min_length=1, max_length=128, repr=False)
 
     @field_validator("username")
     @classmethod
@@ -41,7 +43,7 @@ class LoginRequest(BaseModel):
 
 class RegisterRequest(BaseModel):
     username: str = Field(..., min_length=3, max_length=50)
-    password: str = Field(..., min_length=8, max_length=128)
+    password: str = Field(..., min_length=8, max_length=128, repr=False)
     full_name: str = Field(default="", max_length=100)
 
     @field_validator("username")
@@ -139,7 +141,11 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
     expire = datetime.now(timezone.utc) + (
         expires_delta or timedelta(minutes=settings.JWT_EXPIRATION_MINUTES)
     )
-    to_encode.update({"exp": expire})
+    to_encode.update({
+        "exp": expire,
+        "jti": str(uuid.uuid4()),
+        "iat": datetime.now(timezone.utc),
+    })
     encoded_jwt: str = jwt.encode(
         to_encode,
         settings.JWT_SECRET_KEY,
@@ -251,6 +257,11 @@ async def ensure_admin_user() -> None:
             raise
 
 
+# ─── User Cache ───────────────────────────────────────────────────────────────
+_user_cache: Dict[str, Tuple[UserInfo, float]] = {}
+USER_CACHE_TTL = 60.0
+
+
 # ─── FastAPI Dependencies ─────────────────────────────────────────────────────
 
 
@@ -276,6 +287,13 @@ async def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    # Check cache first
+    now = time.time()
+    if username in _user_cache:
+        cached_user, cached_at = _user_cache[username]
+        if now - cached_at < USER_CACHE_TTL:
+            return cached_user
+
     async with AsyncSessionLocal() as session:
         user = await get_user_by_username(session, username)
         if user is None:
@@ -285,18 +303,23 @@ async def get_current_user(
                 headers={"WWW-Authenticate": "Bearer"},
             )
         if not user.is_active:
+            # Remove from cache if deactivated
+            _user_cache.pop(username, None)
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Usuário desativado. Contate o administrador.",
             )
 
-        return UserInfo(
+        user_info = UserInfo(
             id=user.id,
             username=user.username,
             full_name=user.full_name or "",
             is_admin=user.is_admin,
             role=getattr(user, "role", "analyst") if hasattr(user, "role") else ("admin" if user.is_admin else "analyst"),
         )
+
+    _user_cache[username] = (user_info, now)
+    return user_info
 
 
 async def get_current_user_from_token(token: str) -> UserInfo:
@@ -455,3 +478,4 @@ async def log_audit_event(
             event_hash=event_hash,
         )
     )
+    await session.flush()

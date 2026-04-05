@@ -121,15 +121,17 @@ async def send_chat_message(
             response_text.append(chunk)
             yield f"data: {chunk}\n\n"
 
-        # Salvar resposta completa usando a sessão já vinculada à request
+        # Salvar resposta completa usando uma nova sessão (a request-scoped pode estar fechada)
         full_response = "".join(response_text)
         assistant_msg = ChatMessage(
             conversation_id=conversation_id,
             role="assistant",
             content=full_response,
         )
-        db.add(assistant_msg)
-        await db.commit()
+        from app.database import AsyncSessionLocal
+        async with AsyncSessionLocal() as new_db:
+            new_db.add(assistant_msg)
+            await new_db.commit()
 
         yield "data: [DONE]\n\n"
 

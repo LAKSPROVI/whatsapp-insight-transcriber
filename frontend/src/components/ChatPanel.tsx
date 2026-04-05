@@ -43,6 +43,11 @@ export function ChatPanel({ conversationId, isOpen, onClose }: ChatPanelProps) {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const abortRef = useRef<(() => void) | null>(null);
 
+  // Cleanup abort on unmount
+  useEffect(() => {
+    return () => { abortRef.current?.(); };
+  }, []);
+
   // React Query para carregar histórico
   const { data: historyData } = useChatHistory(conversationId, isOpen);
   const clearHistoryMutation = useClearChatHistory();

@@ -76,6 +76,26 @@ async def get_usage_dashboard(
     conv_result = await db.execute(conv_stmt)
     conversations = conv_result.scalars().all()
 
+    if not conversations:
+        return DashboardResponse(
+            usage=UsageStats(
+                total_conversations=0,
+                total_messages=0,
+                total_media=0,
+                total_chat_messages=0,
+                conversations_by_status={},
+                total_tokens_used=0,
+                estimated_cost_usd=0.0,
+                active_period_days=0,
+                avg_messages_per_conversation=0.0,
+            ),
+            cost_breakdown=[],
+            retention_info={
+                "retention_days": str(settings.DATA_RETENTION_DAYS),
+                "auto_purge_enabled": str(settings.DATA_RETENTION_DAYS > 0),
+            },
+        )
+
     total_messages = sum(c.total_messages or 0 for c in conversations)
     total_media = sum(c.total_media or 0 for c in conversations)
 
@@ -127,7 +147,13 @@ async def get_usage_dashboard(
         week_start = datetime.now(timezone.utc) - timedelta(weeks=week + 1)
         week_end = datetime.now(timezone.utc) - timedelta(weeks=week)
 
-        week_convs = [c for c in conversations if c.created_at and week_start <= c.created_at <= week_end]
+        week_convs = []
+        for c in conversations:
+            if not c.created_at:
+                continue
+            created_at = c.created_at.replace(tzinfo=timezone.utc) if c.created_at.tzinfo is None else c.created_at
+            if week_start <= created_at <= week_end:
+                week_convs.append(c)
 
         week_jobs_stmt = select(func.sum(AgentJob.tokens_used), func.count(AgentJob.id)).where(
             AgentJob.conversation_id.in_([c.id for c in week_convs]),

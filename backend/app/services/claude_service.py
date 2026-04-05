@@ -873,7 +873,8 @@ Responda APENAS com o JSON."""
         participants: List[str] = None
     ) -> Dict[str, Any]:
         """Gera um resumo executivo da conversa"""
-        cache_key = make_cache_key(conversation_text, prefix="wit:summary")
+        limit = 15000
+        cache_key = make_cache_key(conversation_text[:limit], prefix="wit:summary")
         cached_result = await get_cached_result(cache_key)
         if cached_result is not None:
             logger.debug("Cache HIT para generate_summary")
@@ -881,8 +882,6 @@ Responda APENAS com o JSON."""
 
         logger.debug("Cache MISS para generate_summary — chamando API")
         participants_str = ", ".join(participants) if participants else "participantes"
-
-        limit = 15000
         if len(conversation_text) > limit:
             logger.warning(f"Texto truncado de {len(conversation_text)} para {limit} caracteres em generate_summary")
 
@@ -939,15 +938,14 @@ Responda APENAS com o JSON."""
         conversation_text: str
     ) -> Dict[str, Any]:
         """Detecta contradições e inconsistências na conversa"""
-        cache_key = make_cache_key(conversation_text, prefix="wit:contradictions")
+        limit = 12000
+        cache_key = make_cache_key(conversation_text[:limit], prefix="wit:contradictions")
         cached_result = await get_cached_result(cache_key)
         if cached_result is not None:
             logger.debug("Cache HIT para detect_contradictions")
             return cached_result
 
         logger.debug("Cache MISS para detect_contradictions — chamando API")
-
-        limit = 12000
         if len(conversation_text) > limit:
             logger.warning(f"Texto truncado de {len(conversation_text)} para {limit} caracteres em detect_contradictions")
 

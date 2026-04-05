@@ -20,11 +20,23 @@ _stats = {"hits": 0, "misses": 0, "errors": 0, "sets": 0}
 # Conexão Redis global (lazy init)
 _redis_client = None
 _redis_available: Optional[bool] = None
+_redis_retry_after: Optional[float] = None
+REDIS_RETRY_INTERVAL = 30.0  # seconds before retrying Redis after failure
 
 
 async def _get_redis():
     """Obtém conexão Redis (lazy, singleton). Retorna None se indisponível."""
-    global _redis_client, _redis_available
+    global _redis_client, _redis_available, _redis_retry_after
+
+    # If Redis failed previously, check if retry interval has passed
+    if _redis_retry_after is not None:
+        if time.time() < _redis_retry_after:
+            return None
+        # Retry interval passed — reset and try again
+        logger.info("cache.redis.retry", message="Retry interval passed, re-attempting Redis connection")
+        _redis_retry_after = None
+        _redis_available = None
+        _redis_client = None
 
     if _redis_available is False:
         return None
@@ -63,15 +75,15 @@ async def _get_redis():
         return _redis_client
 
     except Exception as e:
-        _redis_available = False
+        _redis_retry_after = time.time() + REDIS_RETRY_INTERVAL
         _redis_client = None
-        logger.warning(f"⚠️ Redis indisponível — cache desabilitado: {e}")
+        logger.warning(f"⚠️ Redis indisponível — retry em {REDIS_RETRY_INTERVAL}s: {e}")
         return None
 
 
 async def close_redis():
     """Fecha conexão Redis (chamado no shutdown da app)."""
-    global _redis_client, _redis_available
+    global _redis_client, _redis_available, _redis_retry_after
     if _redis_client:
         try:
             await _redis_client.close()
@@ -79,6 +91,7 @@ async def close_redis():
             pass
         _redis_client = None
         _redis_available = None
+        _redis_retry_after = None
 
 
 def make_cache_key(content: str, prefix: str = "wit") -> str:
@@ -110,7 +123,17 @@ async def get_cached_result(key: str) -> Optional[Any]:
                 key_pattern=key_pattern,
                 ttl=ttl_remaining,
             )
-            return json.loads(value)
+            try:
+                return json.loads(value)
+            except json.JSONDecodeError:
+                logger.warning("cache.redis.corrupt_data", key=key[:50])
+                try:
+                    await redis.delete(key)
+                except Exception:
+                    pass
+                _stats["errors"] += 1
+                track_cache_operation("get", "error")
+                return None
         else:
             _stats["misses"] += 1
             track_cache_operation("get", "miss")
@@ -222,17 +245,21 @@ def cached(ttl: Optional[int] = None, prefix: str = "wit"):
     def decorator(func: Callable):
         @functools.wraps(func)
         async def wrapper(*args, **kwargs):
-            # Determinar conteúdo para a chave (primeiro arg string após self)
-            cache_content = None
+            # Build cache key from all args and kwargs for uniqueness
+            cache_parts = []
             for arg in args:
                 if isinstance(arg, str) and len(arg) > 10:
-                    cache_content = arg
-                    break
+                    cache_parts.append(arg)
+                elif isinstance(arg, (int, float, bool)):
+                    cache_parts.append(str(arg))
+            for k, v in sorted(kwargs.items()):
+                cache_parts.append(f"{k}={v}")
 
-            if cache_content is None:
+            if not cache_parts:
                 # Sem conteúdo cacheável, executar diretamente
                 return await func(*args, **kwargs)
 
+            cache_content = "|".join(cache_parts)
             key = make_cache_key(cache_content, prefix=f"{prefix}:{func.__name__}")
 
             # Tentar cache

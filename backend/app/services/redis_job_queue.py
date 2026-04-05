@@ -16,6 +16,9 @@ logger = get_logger(__name__)
 STREAM_KEY = "wit:jobs:stream"
 GROUP_NAME = "wit-agents"
 DLQ_KEY = "wit:jobs:dlq"  # Dead letter queue
+STREAM_MAXLEN = 10000  # BUG 3 FIX: Cap stream size to prevent unbounded growth
+DLQ_MAXLEN = 5000
+MAX_DELIVERY_COUNT = 3  # BUG 5 FIX: Max retries before sending to DLQ
 
 
 class RedisJobQueue:
@@ -63,6 +66,10 @@ class RedisJobQueue:
         """
         Adiciona um job à fila Redis Stream.
         Retorna o message_id do Redis ou None se falhar.
+        
+        NOTE (BUG 6): priority is stored in the payload but Redis Streams
+        are strictly FIFO — priority does NOT affect processing order.
+        It is kept as metadata for observability/debugging only.
         """
         if not self.is_available:
             return None
@@ -73,7 +80,7 @@ class RedisJobQueue:
                 "priority": str(priority),
                 "enqueued_at": str(time.time()),
             }
-            msg_id = await self._redis.xadd(STREAM_KEY, payload)
+            msg_id = await self._redis.xadd(STREAM_KEY, payload, maxlen=STREAM_MAXLEN)
             logger.debug(
                 "redis_job_queue.enqueued",
                 msg_id=msg_id,
@@ -112,7 +119,7 @@ class RedisJobQueue:
                             results.append(job_data)
                         except json.JSONDecodeError:
                             logger.error("redis_job_queue.invalid_payload", msg_id=msg_id)
-                            await self.ack(msg_id)
+                            await self.move_to_dlq(msg_id, {"raw": str(fields.get("data", ""))}, "invalid_json")
             
             return results
             
@@ -144,7 +151,7 @@ class RedisJobQueue:
                 "failed_at": str(time.time()),
                 "original_msg_id": msg_id,
             }
-            await self._redis.xadd(DLQ_KEY, dlq_payload)
+            await self._redis.xadd(DLQ_KEY, dlq_payload, maxlen=DLQ_MAXLEN)
             await self.ack(msg_id)  # Remove from pending
             logger.info("redis_job_queue.moved_to_dlq", msg_id=msg_id)
         except Exception as e:
@@ -191,18 +198,42 @@ class RedisJobQueue:
                 count=10,
             )
             
+            # BUG 5 FIX: Check delivery count to prevent infinite retries
+            pending_info = {}
+            try:
+                pending_details = await self._redis.xpending_range(
+                    STREAM_KEY, GROUP_NAME, "-", "+", count=100,
+                )
+                for detail in pending_details:
+                    pending_info[detail["message_id"]] = detail.get("times_delivered", 0)
+            except Exception:
+                pass  # Best-effort; proceed without delivery count info
+
             recovered = []
             if result and len(result) >= 2:
                 messages = result[1]  # Segundo elemento são as mensagens
                 for msg_id, fields in messages:
                     if fields:  # Pode ser None se a mensagem foi deletada
+                        delivery_count = pending_info.get(msg_id, 1)
+                        if delivery_count >= MAX_DELIVERY_COUNT:
+                            logger.warning(
+                                "redis_job_queue.max_retries_exceeded",
+                                msg_id=msg_id,
+                                delivery_count=delivery_count,
+                            )
+                            try:
+                                job_data = json.loads(fields.get("data", "{}"))
+                            except json.JSONDecodeError:
+                                job_data = {"raw": str(fields.get("data", ""))}
+                            await self.move_to_dlq(msg_id, job_data, f"max_retries_exceeded ({delivery_count})")
+                            continue
                         try:
                             job_data = json.loads(fields.get("data", "{}"))
                             job_data["_msg_id"] = msg_id
                             job_data["_recovered"] = True
                             recovered.append(job_data)
                         except json.JSONDecodeError:
-                            await self.ack(msg_id)
+                            await self.move_to_dlq(msg_id, {"raw": str(fields.get("data", ""))}, "invalid_json")
             
             if recovered:
                 logger.info(
@@ -220,18 +251,47 @@ class RedisJobQueue:
 
 # Instância global
 _job_queue: Optional[RedisJobQueue] = None
+_job_queue_lock = asyncio.Lock()  # BUG 1 FIX: Prevent race condition in initialization
+
+
+async def _get_job_redis():
+    """BUG 4 FIX: Independent Redis connection for job queue (not shared with cache)."""
+    try:
+        from app.config import settings
+        redis_url = getattr(settings, "REDIS_URL", None)
+        if not redis_url:
+            return None
+        import redis.asyncio as aioredis
+        client = aioredis.from_url(
+            redis_url,
+            encoding="utf-8",
+            decode_responses=True,
+            socket_connect_timeout=3,
+            socket_timeout=3,
+            retry_on_timeout=True,
+        )
+        await client.ping()
+        return client
+    except Exception as e:
+        logger.warning("redis_job_queue.redis_connect_failed", error=str(e))
+        return None
 
 
 async def get_job_queue() -> RedisJobQueue:
-    """Obtém a instância global da fila de jobs."""
+    """Obtém a instância global da fila de jobs com double-checked locking."""
     global _job_queue
-    if _job_queue is None:
+    # BUG 1 FIX: Fast path without lock
+    if _job_queue is not None:
+        return _job_queue
+    async with _job_queue_lock:
+        # Double-check after acquiring lock
+        if _job_queue is not None:
+            return _job_queue
         _job_queue = RedisJobQueue()
         try:
-            from app.services.cache_service import _get_redis
-            redis = await _get_redis()
+            redis = await _get_job_redis()
             if redis:
                 await _job_queue.initialize(redis)
         except Exception as e:
-            logger.warning(f"redis_job_queue.init_fallback: {e}")
+            logger.warning("redis_job_queue.init_fallback", error=str(e))
     return _job_queue

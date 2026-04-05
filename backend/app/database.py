@@ -55,7 +55,10 @@ async def init_db() -> None:
 
 
 def _get_sync_database_url(database_url: str) -> str:
-    return database_url.replace("+asyncpg", "").replace("+aiosqlite", "")
+    from sqlalchemy.engine import make_url
+    url = make_url(database_url)
+    driver = url.drivername.split("+")[0]
+    return str(url.set(drivername=driver))
 
 
 def _should_run_migrations_on_startup() -> bool:

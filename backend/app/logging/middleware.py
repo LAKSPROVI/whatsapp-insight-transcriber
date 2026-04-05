@@ -81,7 +81,12 @@ class RequestTracingMiddleware(BaseHTTPMiddleware):
         start_time = time.perf_counter()
 
         # ── Extrair info do usuario ───────────────────────────
-        client_ip = request.client.host if request.client else "unknown"
+        # BUG 12 FIX: Extract real client IP from proxy headers
+        client_ip = (
+            request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+            or request.headers.get("X-Real-IP", "")
+            or (request.client.host if request.client else "unknown")
+        )
         user_agent = request.headers.get("User-Agent", "")[:256]
 
         # ── Log request started ───────────────────────────────

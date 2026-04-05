@@ -24,39 +24,39 @@ logger = get_logger(__name__)
 PATTERNS = [
     # Android PT-BR: 26/03/2025 23:10:15 - Nome: mensagem
     re.compile(
-        r"^(\d{1,2}/\d{1,2}/\d{2,4}),?\s+(\d{1,2}:\d{2}(?::\d{2})?)\s*(?:AM|PM|am|pm)?\s*[-–]\s*([^:]+):\s*(.+)$",
+        r"^(\d{1,2}/\d{1,2}/\d{2,4}),?\s+(\d{1,2}:\d{2}(?::\d{2})?\s*(?:AM|PM|am|pm)?)\s*[-–]\s*([^:]+):\s*(.+)$",
         re.MULTILINE | re.DOTALL,
     ),
     # iOS: [26/03/2025, 23:10:15] Nome: mensagem
     re.compile(
-        r"^\[(\d{1,2}/\d{1,2}/\d{2,4}),\s+(\d{1,2}:\d{2}(?::\d{2})?)\s*(?:AM|PM|am|pm)?\]\s+([^:]+):\s*(.+)$",
+        r"^\[(\d{1,2}/\d{1,2}/\d{2,4}),\s+(\d{1,2}:\d{2}(?::\d{2})?\s*(?:AM|PM|am|pm)?)\]\s+([^:]+):\s*(.+)$",
         re.MULTILINE | re.DOTALL,
     ),
     # Formato alternativo com traço (sem vírgula)
     re.compile(
-        r"^(\d{1,2}/\d{1,2}/\d{2,4})\s+(\d{1,2}:\d{2}(?::\d{2})?)\s*[-–]\s*([^:]+):\s*(.+)$",
+        r"^(\d{1,2}/\d{1,2}/\d{2,4})\s+(\d{1,2}:\d{2}(?::\d{2})?\s*(?:AM|PM|am|pm)?)\s*[-–]\s*([^:]+):\s*(.+)$",
         re.MULTILINE | re.DOTALL,
     ),
     # ISO yyyy-mm-dd HH:MM - Nome: mensagem
     re.compile(
-        r"^(\d{4}-\d{2}-\d{2}),?\s+(\d{1,2}:\d{2}(?::\d{2})?)\s*(?:AM|PM|am|pm)?\s*[-–]\s*([^:]+):\s*(.+)$",
+        r"^(\d{4}-\d{2}-\d{2}),?\s+(\d{1,2}:\d{2}(?::\d{2})?\s*(?:AM|PM|am|pm)?)\s*[-–]\s*([^:]+):\s*(.+)$",
         re.MULTILINE | re.DOTALL,
     ),
     # Formato com ponto: dd.mm.yyyy, HH:MM - Nome: mensagem (alemão, etc.)
     re.compile(
-        r"^(\d{1,2}\.\d{1,2}\.\d{2,4}),?\s+(\d{1,2}:\d{2}(?::\d{2})?)\s*[-–]\s*([^:]+):\s*(.+)$",
+        r"^(\d{1,2}\.\d{1,2}\.\d{2,4}),?\s+(\d{1,2}:\d{2}(?::\d{2})?\s*(?:AM|PM|am|pm)?)\s*[-–]\s*([^:]+):\s*(.+)$",
         re.MULTILINE | re.DOTALL,
     ),
     # Mensagens de sistema com data (sem remetente): dd/mm/yyyy HH:MM - mensagem
     re.compile(
-        r"^(\d{1,2}/\d{1,2}/\d{2,4}),?\s+(\d{1,2}:\d{2}(?::\d{2})?)\s*(?:AM|PM|am|pm)?\s*[-–]\s*(.+)$",
+        r"^(\d{1,2}/\d{1,2}/\d{2,4}),?\s+(\d{1,2}:\d{2}(?::\d{2})?\s*(?:AM|PM|am|pm)?)\s*[-–]\s*(.+)$",
         re.MULTILINE | re.DOTALL,
     ),
 ]
 
 # Padrão separado para mensagens de sistema (sem sender:)
 SYSTEM_MESSAGE_PATTERN = re.compile(
-    r"^(?:\[)?(\d{1,2}[/.\-]\d{1,2}[/.\-]\d{2,4})[,\]]?\s+(\d{1,2}:\d{2}(?::\d{2})?)\s*(?:AM|PM|am|pm)?\s*(?:\])?\s*[-–]\s*(.+)$",
+    r"^(?:\[)?(\d{1,2}[/.\-]\d{1,2}[/.\-]\d{2,4})[,\]]?\s+(\d{1,2}:\d{2}(?::\d{2})?\s*(?:AM|PM|am|pm)?)\s*(?:\])?\s*[-–]\s*(.+)$",
     re.MULTILINE,
 )
 
@@ -207,6 +207,12 @@ class WhatsAppParser:
                     for member in zf.namelist():
                         member_path = os.path.normpath(member)
                         if member_path.startswith("..") or os.path.isabs(member_path):
+                            raise ParserError(
+                                detail=f"Caminho suspeito no ZIP (path traversal): {member}",
+                                context={"file": member, "zip_path": zip_path},
+                            )
+                        resolved = os.path.realpath(os.path.join(str(extract_path), member))
+                        if not resolved.startswith(os.path.realpath(str(extract_path))):
                             raise ParserError(
                                 detail=f"Caminho suspeito no ZIP (path traversal): {member}",
                                 context={"file": member, "zip_path": zip_path},
@@ -458,7 +464,7 @@ class WhatsAppParser:
     def _is_system_sender(self, sender: str) -> bool:
         """Verifica se o remetente parece ser sistema/notificação."""
         system_senders = {
-            "system", "sistema", "whatsapp", "you", "você",
+            "system", "sistema", "whatsapp",
         }
         # Mensagens de sistema geralmente não têm nome de pessoa
         lower = sender.lower().strip()
@@ -489,7 +495,7 @@ class WhatsAppParser:
         WhatsApp Web/Android mostra citações de formas diferentes.
         """
         # Padrão iOS: começa com caractere especial de citação
-        quote_match = re.match(r"^\u200e?⁣?\u200e?(.+?)\n(.+)$", text, re.DOTALL)
+        quote_match = re.match(r"^[\u200e⁣]+(.+?)\n(.+)$", text, re.DOTALL)
         if quote_match:
             potential_quote = quote_match.group(1).strip()
             # Verificar se parece uma citação (geralmente curta)

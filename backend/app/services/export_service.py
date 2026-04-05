@@ -9,6 +9,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Dict, Any
+import html as html_module
 from xml.sax.saxutils import escape
 
 from app.models import Conversation, Message, MediaType, SentimentType
@@ -746,7 +747,7 @@ class HTMLExporter:
         msgs_html = []
         for msg in messages:
             ts = _format_timestamp(msg.timestamp)
-            sender = escape(msg.sender)
+            sender = html_module.escape(msg.sender)
             text = escape(msg.original_text or "")
             if msg.media_type != MediaType.TEXT:
                 media_label = escape(_media_type_label(msg.media_type))

@@ -336,6 +336,64 @@ export interface TemplateAnalysisResult {
   executed_prompts: string[];
 }
 
+// ─── Custody & Audit Types ────────────────────────────────────────────────────
+
+export interface CustodyRecord {
+  id: string;
+  event_type: string;
+  actor_id?: string;
+  description?: string;
+  prev_hash: string;
+  current_hash: string;
+  evidence?: Record<string, unknown>;
+  created_at?: string;
+}
+
+export interface CustodyChainResponse {
+  conversation_id: string;
+  records: CustodyRecord[];
+  total: number;
+}
+
+export interface ChainVerificationResponse {
+  valid: boolean;
+  records_checked: number;
+  error?: string;
+  first_hash?: string;
+  last_hash?: string;
+}
+
+export interface CertificateResponse {
+  certificate_id: string;
+  signature: string;
+  chain_valid: boolean;
+  zip_hash: string;
+  merkle_root: string;
+  issued_at: string;
+  file_count: number;
+  message_count: number;
+  conversation_name: string;
+}
+
+export interface AuditEvent {
+  id: string;
+  action: string;
+  user_id?: string;
+  resource_type?: string;
+  resource_id?: string;
+  details?: Record<string, unknown>;
+  ip_address?: string;
+  user_agent?: string;
+  prev_hash?: string;
+  event_hash?: string;
+  created_at?: string;
+}
+
+export interface AuditEventsResponse {
+  events: AuditEvent[];
+  total: number;
+}
+
 // ─── UI State ─────────────────────────────────────────────────────────────────
 
 export type AppView = "home" | "processing" | "conversation" | "history";

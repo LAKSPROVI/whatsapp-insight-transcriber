@@ -67,7 +67,6 @@ class Settings(BaseSettings):
     ALLOWED_ORIGINS: list[str] = [
         "http://localhost:3000",
         "http://127.0.0.1:3000",
-        "http://transcriber.jurislaw.com.br",
         "https://transcriber.jurislaw.com.br",
     ]
 
@@ -120,3 +119,4 @@ def validate_settings(s: "Settings") -> None:
 
 
 settings = Settings()
+validate_settings(settings)

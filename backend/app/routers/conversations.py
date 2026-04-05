@@ -14,7 +14,7 @@ from typing import List, Optional
 
 import asyncio
 import aiofiles
-from fastapi import APIRouter, Depends, File, UploadFile, HTTPException, Request
+from fastapi import APIRouter, Depends, File, Query, UploadFile, HTTPException, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc
@@ -215,6 +215,7 @@ async def upload_conversation(
         consent_text="Consentimento para processamento de upload concedido via plataforma.",
     )
     db.add(consent)
+    await db.flush()
     conversation.consent_id = consent.id
 
     await log_audit_event(
@@ -644,8 +645,8 @@ async def delete_conversation(
             actor_id=current_user.id,
             description=f"Conversa excluida pelo usuario {current_user.username}",
         )
-    except Exception:
-        pass  # Non-blocking
+    except Exception as e:
+        logger.warning("custody.delete_event_failed", error=str(e))  # Non-blocking
 
     await db.delete(conv)
     await db.commit()

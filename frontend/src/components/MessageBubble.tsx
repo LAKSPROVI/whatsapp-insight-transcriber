@@ -4,7 +4,7 @@ import { useState, useCallback, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Download, ChevronDown, ChevronUp,
-  Star, AlertTriangle, Info, Reply, Forward, Bookmark
+  Star, AlertTriangle, Info, Forward
 } from "lucide-react";
 import { format, parseISO } from "date-fns";
 import { ptBR } from "date-fns/locale";
@@ -14,7 +14,7 @@ import {
   getMediaLabel, getSentimentEmoji, getSentimentColor,
   formatDuration
 } from "@/lib/utils";
-import { buildApiUrl } from "@/lib/api";
+import { buildAuthenticatedMediaUrl } from "@/lib/api";
 import { formatWhatsAppText } from "@/lib/whatsappFormatter";
 import { AudioPlayer } from "@/components/AudioPlayer";
 import { VideoPlayer } from "@/components/VideoPlayer";
@@ -61,7 +61,7 @@ export function MessageBubble({
   }, [message.timestamp]);
 
   const mediaUrl = message.media_url
-    ? buildApiUrl(message.media_url)
+    ? buildAuthenticatedMediaUrl(message.media_url)
     : null;
 
   // Parse forwarded/quoted info from original_text

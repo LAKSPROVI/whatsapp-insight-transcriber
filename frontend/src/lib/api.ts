@@ -102,7 +102,11 @@ export function buildWebSocketUrl(path: string): string {
 }
 
 
-export async function fetchMediaBlob(path: string): Promise<string> {
+/**
+ * Fetches media as a blob and returns an object URL.
+ * Callers MUST call `revoke()` when done to avoid memory leaks.
+ */
+export async function fetchMediaBlob(path: string): Promise<{ url: string; revoke: () => void }> {
   const token = getToken();
   const response = await fetch(buildApiUrl(path), {
     headers: token ? { Authorization: `Bearer ${token}` } : {},
@@ -114,7 +118,8 @@ export async function fetchMediaBlob(path: string): Promise<string> {
   }
 
   const blob = await response.blob();
-  return URL.createObjectURL(blob);
+  const blobUrl = URL.createObjectURL(blob);
+  return { url: blobUrl, revoke: () => URL.revokeObjectURL(blobUrl) };
 }
 
 export function setToken(token: string): void {
@@ -655,6 +660,90 @@ export async function getAuditEvents(
   return apiFetch<AuditEventsResponse>(
     `/api/custody/audit/${conversationId}?limit=${limit}&offset=${offset}`
   );
+}
+
+// ─── Semantic Search ───────────────────────────────────────────────────
+
+export interface SemanticSearchResult {
+  message_id: string;
+  content: string;
+  score: number;
+}
+
+export async function semanticSearch(
+  conversationId: string,
+  query: string,
+  limit = 10
+): Promise<SemanticSearchResult[]> {
+  const qs = new URLSearchParams({ conversation_id: conversationId, q: query, limit: String(limit) });
+  return apiFetch<SemanticSearchResult[]>(`/api/search/semantic?${qs}`);
+}
+
+// ─── Agent Status ──────────────────────────────────────────────────────
+
+export async function getAgentStatus(): Promise<Record<string, unknown>> {
+  return apiFetch<Record<string, unknown>>("/api/agents/status");
+}
+
+// ─── Dashboard ─────────────────────────────────────────────────────────
+
+export async function getDashboardUsage(days = 30): Promise<Record<string, unknown>> {
+  return apiFetch<Record<string, unknown>>(`/api/dashboard/usage?days=${days}`);
+}
+
+// ─── Tags & Bookmarks ─────────────────────────────────────────────────
+
+export interface UserTag {
+  id: string;
+  name: string;
+  color: string;
+  owner_id?: string;
+  created_at?: string;
+}
+
+export interface BookmarkEntry {
+  id: string;
+  message_id: string;
+  conversation_id: string;
+  user_id: string;
+  note?: string;
+  created_at?: string;
+}
+
+export async function getTags(): Promise<{ tags: UserTag[] }> {
+  return apiFetch<{ tags: UserTag[] }>("/api/tags/");
+}
+
+export async function createTag(name: string, color: string): Promise<UserTag> {
+  return apiFetch<UserTag>("/api/tags/", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, color }),
+  });
+}
+
+export async function deleteTag(tagId: string): Promise<{ message: string }> {
+  return apiFetch<{ message: string }>(`/api/tags/${tagId}`, { method: "DELETE" });
+}
+
+export async function getBookmarks(conversationId: string): Promise<{ bookmarks: BookmarkEntry[] }> {
+  return apiFetch<{ bookmarks: BookmarkEntry[] }>(`/api/tags/bookmarks/${conversationId}`);
+}
+
+export async function createBookmark(
+  messageId: string,
+  conversationId: string,
+  note?: string
+): Promise<BookmarkEntry> {
+  return apiFetch<BookmarkEntry>("/api/tags/bookmarks", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message_id: messageId, conversation_id: conversationId, note }),
+  });
+}
+
+export async function deleteBookmark(bookmarkId: string): Promise<{ message: string }> {
+  return apiFetch<{ message: string }>(`/api/tags/bookmarks/${bookmarkId}`, { method: "DELETE" });
 }
 
 // ─── Templates ──────────────────────────────────────────────────────────────

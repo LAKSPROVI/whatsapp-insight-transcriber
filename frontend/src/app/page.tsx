@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
-import { useRouter, useSearchParams, usePathname } from "next/navigation";
+
 import { motion, AnimatePresence } from "framer-motion";
 import {
   History, ChevronRight, Brain, Clock,
@@ -13,7 +13,9 @@ import { ProcessingPanel } from "@/components/ProcessingPanel";
 import { ConversationView } from "@/components/ConversationView";
 import { LoginForm } from "@/components/LoginForm";
 import { AdminPanel } from "@/components/AdminPanel";
-import { buildWebSocketUrl, getCurrentUser, getProgress, getToken, listConversations } from "@/lib/api";
+import { DashboardPanel } from "@/components/DashboardPanel";
+import LGPDPanel from "@/components/LGPDPanel";
+import { buildWebSocketUrl, buildApiUrl, getCurrentUser, getProgress, getToken, listConversations } from "@/lib/api";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { useTheme } from "@/lib/theme";
@@ -54,6 +56,9 @@ export default function Home() {
 
   const [isAdmin, setIsAdmin] = useState(false);
   const [showAdmin, setShowAdmin] = useState(false);
+  const [showDashboard, setShowDashboard] = useState(false);
+  const [showLGPD, setShowLGPD] = useState(false);
+  const [agentStatus, setAgentStatus] = useState<{ active_agents?: number; status?: string } | null>(null);
   const [sortBy, setSortBy] = useState<"date" | "messages">("date");
   const [searchFilter, setSearchFilter] = useState("");
   const [page, setPage] = useState(0);
@@ -258,6 +263,7 @@ export default function Home() {
 
   // Fallback polling
   const startPolling = useCallback((sessionId: string) => {
+    if (pollingRef.current) clearInterval(pollingRef.current);
     let pollErrors = 0;
     const interval = setInterval(async () => {
       try {
@@ -410,11 +416,27 @@ export default function Home() {
           <div className="flex items-center gap-3">
             <div className="flex items-center gap-1.5 text-xs text-accent-400" aria-label="Status dos agentes">
               <span className="w-1.5 h-1.5 rounded-full bg-accent-400 animate-pulse" aria-hidden="true" />
-              <span className="hidden sm:inline">20 Agentes Online</span>
+              <span className="hidden sm:inline">{agentStatus?.active_agents ?? 20} Agentes Online</span>
             </div>
             <div className="text-xs text-gray-500 hidden md:block" aria-hidden="true">
               Claude Opus 4.6
             </div>
+            <button
+              onClick={() => setShowDashboard(true)}
+              className="flex items-center gap-1.5 px-2 py-1.5 rounded-lg text-xs text-gray-400 hover:text-brand-300 hover:bg-brand-500/10 transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
+              aria-label="Dashboard de uso"
+            >
+              <Activity className="w-3.5 h-3.5" aria-hidden="true" />
+              <span className="hidden sm:inline">Dashboard</span>
+            </button>
+            <button
+              onClick={() => setShowLGPD(true)}
+              className="flex items-center gap-1.5 px-2 py-1.5 rounded-lg text-xs text-gray-400 hover:text-brand-300 hover:bg-brand-500/10 transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
+              aria-label="Privacidade e dados"
+            >
+              <Shield className="w-3.5 h-3.5" aria-hidden="true" />
+              <span className="hidden sm:inline">LGPD</span>
+            </button>
             <ThemeToggle />
             {isAdmin && (
               <button
@@ -679,6 +701,36 @@ export default function Home() {
               </motion.div>
             ) : null}
           </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Dashboard Modal */}
+      <AnimatePresence>
+        {showDashboard && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
+            onClick={() => setShowDashboard(false)}
+          >
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="w-full max-w-4xl max-h-[90vh] overflow-y-auto"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <DashboardPanel onClose={() => setShowDashboard(false)} />
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* LGPD Modal — LGPDPanel provides its own modal overlay */}
+      <AnimatePresence>
+        {showLGPD && (
+          <LGPDPanel onClose={() => setShowLGPD(false)} />
         )}
       </AnimatePresence>
     </main>

@@ -128,7 +128,7 @@ class Message(Base):
     __tablename__ = "messages"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    conversation_id: Mapped[str] = mapped_column(String(36), ForeignKey("conversations.id"))
+    conversation_id: Mapped[str] = mapped_column(String(36), ForeignKey("conversations.id"), index=True)
     sequence_number: Mapped[int] = mapped_column(Integer, index=True)
 
     # Dados originais
@@ -178,7 +178,7 @@ class ChatMessage(Base):
     __tablename__ = "chat_messages"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    conversation_id: Mapped[str] = mapped_column(String(36), ForeignKey("conversations.id"))
+    conversation_id: Mapped[str] = mapped_column(String(36), ForeignKey("conversations.id"), index=True)
     role: Mapped[str] = mapped_column(String(20))  # "user" or "assistant"
     content: Mapped[str] = mapped_column(Text)
     tokens_used: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
@@ -192,7 +192,7 @@ class AgentJob(Base):
     __tablename__ = "agent_jobs"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    conversation_id: Mapped[str] = mapped_column(String(36), ForeignKey("conversations.id"))
+    conversation_id: Mapped[str] = mapped_column(String(36), ForeignKey("conversations.id"), index=True)
     agent_id: Mapped[str] = mapped_column(String(50))
     message_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
     job_type: Mapped[str] = mapped_column(String(50))  # transcribe_audio, describe_image, etc.
@@ -234,9 +234,7 @@ class User(Base):
     username: Mapped[str] = mapped_column(String(50), unique=True, index=True, nullable=False)
     hashed_password: Mapped[str] = mapped_column(String(255), nullable=False)
     full_name: Mapped[str] = mapped_column(String(100), default="")
-    role: Mapped[UserRole] = mapped_column(
-        SQLEnum(UserRole), default=UserRole.ANALYST
-    )
+    role: Mapped[str] = mapped_column(String(20), default="analyst")
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     privacy_policy_accepted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -333,4 +331,17 @@ class MessageBookmark(Base):
     conversation_id: Mapped[str] = mapped_column(String(36), ForeignKey("conversations.id"), index=True)
     user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), index=True)
     note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class MessageEmbedding(Base):
+    """Embeddings vetoriais de mensagens para busca semantica via pgvector."""
+    __tablename__ = "message_embeddings"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    message_id: Mapped[str] = mapped_column(String(36), ForeignKey("messages.id"), unique=True, index=True)
+    conversation_id: Mapped[str] = mapped_column(String(36), ForeignKey("conversations.id"), index=True)
+    content_text: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    model: Mapped[str] = mapped_column(String(50), default="hash-embedding", nullable=True)
+    # embedding column is managed via raw SQL (pgvector type) in migration 006
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))

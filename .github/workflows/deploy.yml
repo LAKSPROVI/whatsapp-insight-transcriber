@@ -219,11 +219,19 @@ jobs:
             echo "Criando diretorios de dados..."
             mkdir -p data/uploads data/media
             
+            echo "Forcar recriacao dos containers de infra..."
+            docker compose rm -sf redis postgres elasticsearch fluentbit 2>/dev/null || true
+            
             echo "Buildando e iniciando containers base..."
-            docker compose up -d --build postgres redis elasticsearch fluentbit
+            docker compose up -d --build --force-recreate postgres redis elasticsearch fluentbit
 
             echo "Aguardando deps (postgres/redis)..."
             sleep 10
+            
+            echo "Status dos containers de infra:"
+            docker compose ps postgres redis elasticsearch
+            echo "Logs do Redis:"
+            docker compose logs redis --tail=10
 
             echo "Buildando imagens de backend e frontend..."
             docker compose build backend frontend
@@ -303,6 +311,8 @@ jobs:
               echo "Restaurando backend anterior..."
               docker compose stop backend frontend
               
+              docker tag wit-backend:previous wit-backend:latest
+              docker tag wit-frontend:previous wit-frontend:latest
               docker compose up -d --no-deps backend frontend
               
               echo "Aguardando backend restaurado..."

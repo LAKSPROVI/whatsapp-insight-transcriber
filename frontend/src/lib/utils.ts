@@ -38,11 +38,8 @@ export function formatDuration(seconds?: number): string {
 
 // ─── Media helpers ──────────────────────────────────────────────────────────
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8020";
-
-export function getMediaUrl(conversationId: string, filename: string): string {
-  return `${API_BASE}/api/media/${conversationId}/${filename}`;
-}
+// Usar mesma base URL do api.ts para consistência
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || "";
 
 export function getMediaIcon(mediaType?: string): string {
   switch (mediaType?.toLowerCase()) {

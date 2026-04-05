@@ -171,8 +171,8 @@ export const useAppStore = create<AppStore>()(
       {
         name: "whatsapp-insight-store",
         // Only persist auth-related state
-        partialize: (state) => ({
-          isAuthenticated: state.isAuthenticated,
+        partialize: () => ({
+          // Do not persist isAuthenticated — it can become stale
         }),
       }
     ),

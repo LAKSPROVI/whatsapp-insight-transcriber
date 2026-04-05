@@ -5,7 +5,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   ArrowLeft, MessageSquare, BarChart2, FileDown,
   Search, Loader2, RefreshCw, Users, ChevronDown, Clock, Grid3X3, Info,
-  Shield
+  Shield, Tag
 } from "lucide-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useConversation, useMessages } from "@/lib/queries";
@@ -22,6 +22,7 @@ import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { ImageLightbox } from "@/components/ImageLightbox";
 import { MetadataPanel } from "@/components/MetadataPanel";
 import { CustodyPanel } from "@/components/CustodyPanel";
+import { TagsPanel } from "@/components/TagsPanel";
 import { cn, getSentimentEmoji, getSentimentColorHex } from "@/lib/utils";
 
 interface ConversationViewProps {
@@ -29,7 +30,7 @@ interface ConversationViewProps {
   onBack: () => void;
 }
 
-type SidePanel = "none" | "chat" | "analytics" | "export" | "timeline" | "heatmap" | "metadata" | "custody";
+type SidePanel = "none" | "chat" | "analytics" | "export" | "timeline" | "heatmap" | "metadata" | "custody" | "tags";
 
 export function ConversationView({ conversationId, onBack }: ConversationViewProps) {
   const [allMessages, setAllMessages] = useState<Message[]>([]);
@@ -44,6 +45,7 @@ export function ConversationView({ conversationId, onBack }: ConversationViewPro
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const [lightboxIndex, setLightboxIndex] = useState(0);
   const parentRef = useRef<HTMLDivElement>(null);
+  const offsetRef = useRef(0);
   const PAGE_SIZE = 100;
 
   // React Query
@@ -58,6 +60,7 @@ export function ConversationView({ conversationId, onBack }: ConversationViewPro
     if (initialMessages) {
       setAllMessages(initialMessages);
       setHasMore(initialMessages.length === PAGE_SIZE);
+      offsetRef.current = initialMessages.length;
     }
   }, [initialMessages]);
 
@@ -69,14 +72,18 @@ export function ConversationView({ conversationId, onBack }: ConversationViewPro
     if (loadingMore || !hasMore) return;
     setLoadingMore(true);
     try {
-      const msgs = await getMessages(conversationId, allMessages.length, PAGE_SIZE, false, filterSender || undefined);
-      setAllMessages((prev) => [...prev, ...msgs]);
+      const msgs = await getMessages(conversationId, offsetRef.current, PAGE_SIZE, false, filterSender || undefined);
+      setAllMessages((prev) => {
+        const next = [...prev, ...msgs];
+        offsetRef.current = next.length;
+        return next;
+      });
       setHasMore(msgs.length === PAGE_SIZE);
     } catch (err) {
       console.error("Erro ao carregar mais mensagens:", err);
     }
     setLoadingMore(false);
-  }, [conversationId, allMessages.length, filterSender, loadingMore, hasMore]);
+  }, [conversationId, filterSender, loadingMore, hasMore]);
 
   // Filtered messages
   const filteredMessages = useMemo(() => {
@@ -142,7 +149,7 @@ export function ConversationView({ conversationId, onBack }: ConversationViewPro
   }, []);
 
   // Handle search result click -> scroll to message
-  const handleSearchResultClick = useCallback((messageId: string) => {
+  const handleSearchResultClick = (messageId: string) => {
     setHighlightedMessageId(messageId);
 
     // Find the message in virtualItems
@@ -156,7 +163,7 @@ export function ConversationView({ conversationId, onBack }: ConversationViewPro
 
     // Clear highlight after animation
     setTimeout(() => setHighlightedMessageId(null), 3000);
-  }, [virtualItems]);
+  };
 
   // Virtualizer
   const virtualizer = useVirtualizer({
@@ -285,6 +292,7 @@ export function ConversationView({ conversationId, onBack }: ConversationViewPro
               { id: "chat" as SidePanel, icon: MessageSquare, label: "Chat IA", color: "brand" },
               { id: "export" as SidePanel, icon: FileDown, label: "Exportar", color: "brand" },
               { id: "custody" as SidePanel, icon: Shield, label: "Custódia", color: "brand" },
+              { id: "tags" as SidePanel, icon: Tag, label: "Tags", color: "brand" },
             ].map(({ id, icon: Icon, label, color }) => (
               <button
                 key={id}
@@ -495,6 +503,9 @@ export function ConversationView({ conversationId, onBack }: ConversationViewPro
               )}
               {sidePanel === "custody" && (
                 <ErrorBoundary><CustodyPanel conversationId={conversationId} /></ErrorBoundary>
+              )}
+              {sidePanel === "tags" && (
+                <ErrorBoundary><TagsPanel conversationId={conversationId} /></ErrorBoundary>
               )}
             </div>
           </motion.div>

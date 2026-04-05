@@ -4,7 +4,6 @@ Substitui o polling HTTP por push notifications via WebSocket.
 """
 import asyncio
 import json
-import logging
 from typing import Dict, Set
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -12,6 +11,8 @@ from sqlalchemy import select
 
 from app.auth import verify_token
 from app.database import AsyncSessionLocal
+from app.logging import get_logger  # BUG 11 FIX: Use structlog instead of stdlib logging
+
 try:
     from app.metrics import set_ws_active_connections
 except ImportError:
@@ -19,8 +20,12 @@ except ImportError:
         pass
 from app.models import Conversation, ProcessingStatus
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 router = APIRouter(tags=["websocket"])
+
+# BUG 9 FIX: Connection limits
+MAX_CONNECTIONS_PER_SESSION = 10
+MAX_TOTAL_CONNECTIONS = 500
 
 # ─── Gerenciador de Conexões ─────────────────────────────────────────────────
 
@@ -31,33 +36,48 @@ class ConnectionManager:
         self._connections: Dict[str, Set[WebSocket]] = {}
 
     async def connect(self, session_id: str, websocket: WebSocket):
+        # BUG 9 FIX: Enforce connection limits
+        total = sum(len(items) for items in self._connections.values())
+        if total >= MAX_TOTAL_CONNECTIONS:
+            await websocket.close(code=4429, reason="Limite total de conexões atingido")
+            return False
+        session_conns = self._connections.get(session_id, set())
+        if len(session_conns) >= MAX_CONNECTIONS_PER_SESSION:
+            await websocket.close(code=4429, reason="Limite de conexões por sessão atingido")
+            return False
+
         await websocket.accept()
         if session_id not in self._connections:
             self._connections[session_id] = set()
         self._connections[session_id].add(websocket)
         set_ws_active_connections(sum(len(items) for items in self._connections.values()))
-        logger.info(f"WS conectado: session={session_id}, total={len(self._connections[session_id])}")
+        logger.info("ws.connected", session_id=session_id, total=len(self._connections[session_id]))
+        return True
 
     def disconnect(self, session_id: str, websocket: WebSocket):
+        # BUG 10 FIX: Guard against KeyError after session deleted
         if session_id in self._connections:
             self._connections[session_id].discard(websocket)
             if not self._connections[session_id]:
                 del self._connections[session_id]
         set_ws_active_connections(sum(len(items) for items in self._connections.values()))
-        logger.info(f"WS desconectado: session={session_id}")
+        logger.info("ws.disconnected", session_id=session_id)
 
     async def broadcast(self, session_id: str, data: dict):
         """Envia dados para todos os clientes conectados a uma session."""
         if session_id not in self._connections:
             return
         dead = []
-        for ws in self._connections[session_id]:
+        # BUG 7 FIX: Iterate over a copy to avoid RuntimeError (set changed during iteration)
+        for ws in list(self._connections.get(session_id, set())):
             try:
                 await ws.send_json(data)
             except Exception:
                 dead.append(ws)
-        for ws in dead:
-            self._connections[session_id].discard(ws)
+        # BUG 10 FIX: Guard against session being deleted between iteration and cleanup
+        if session_id in self._connections:
+            for ws in dead:
+                self._connections[session_id].discard(ws)
         set_ws_active_connections(sum(len(items) for items in self._connections.values()))
 
     def has_subscribers(self, session_id: str) -> bool:
@@ -156,9 +176,17 @@ async def ws_progress(websocket: WebSocket, session_id: str):
                 "message": current.get("message", ""),
             })
 
-        # Manter conexão aberta, responder a pings
+        # BUG 8 FIX: Heartbeat/zombie cleanup with receive timeout
         while True:
-            data = await websocket.receive_text()
+            try:
+                data = await asyncio.wait_for(websocket.receive_text(), timeout=120.0)
+            except asyncio.TimeoutError:
+                # No message in 120s — send ping to check if client is alive
+                try:
+                    await websocket.send_json({"type": "ping"})
+                except Exception:
+                    break  # Client is dead
+                continue
             if data == "ping":
                 await websocket.send_json({"type": "pong"})
     except WebSocketDisconnect:

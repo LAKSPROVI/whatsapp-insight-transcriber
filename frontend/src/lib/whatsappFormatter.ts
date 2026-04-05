@@ -8,6 +8,7 @@ import DOMPurify from "dompurify";
  */
 export function formatWhatsAppText(text: string): string {
   if (!text) return "";
+  if (typeof window === "undefined") return text;
 
   let html = escapeHtml(text);
 

@@ -79,7 +79,9 @@ export function ActivityHeatmap({ messages }: ActivityHeatmapProps) {
     const current = new Date(startDate);
     let currentWeek: Array<{ date: string; count: number; dayOfWeek: number }> = [];
 
+    let safety = 0;
     while (current <= now || currentWeek.length > 0) {
+      if (++safety > 10000) break;
       const key = current.toISOString().split("T")[0];
       const count = dateMap.get(key) || 0;
       if (count > max) max = count;

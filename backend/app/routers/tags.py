@@ -132,6 +132,25 @@ async def tag_message(
     current_user: UserInfo = Depends(get_current_user),
 ):
     """Aplica uma tag a uma mensagem."""
+    # Verify tag belongs to current user
+    tag_stmt = select(Tag).where(Tag.id == data.tag_id, Tag.owner_id == current_user.id)
+    tag = (await db.execute(tag_stmt)).scalar_one_or_none()
+    if not tag:
+        raise HTTPException(404, "Tag não encontrada")
+
+    # Verify message belongs to a conversation the user owns
+    from app.models import Message, Conversation
+    msg_stmt = (
+        select(Message)
+        .join(Conversation, Message.conversation_id == Conversation.id)
+        .where(Message.id == data.message_id)
+    )
+    if not current_user.is_admin:
+        msg_stmt = msg_stmt.where(Conversation.owner_id == current_user.id)
+    msg = (await db.execute(msg_stmt)).scalar_one_or_none()
+    if not msg:
+        raise HTTPException(404, "Mensagem não encontrada")
+
     # Check if already tagged
     stmt = select(MessageTag).where(
         MessageTag.message_id == data.message_id,
@@ -159,6 +178,25 @@ async def untag_message(
     current_user: UserInfo = Depends(get_current_user),
 ):
     """Remove uma tag de uma mensagem."""
+    # Verify tag belongs to current user
+    tag_stmt = select(Tag).where(Tag.id == tag_id, Tag.owner_id == current_user.id)
+    tag = (await db.execute(tag_stmt)).scalar_one_or_none()
+    if not tag:
+        raise HTTPException(404, "Tag não encontrada")
+
+    # Verify message belongs to a conversation the user owns
+    from app.models import Message, Conversation
+    msg_stmt = (
+        select(Message)
+        .join(Conversation, Message.conversation_id == Conversation.id)
+        .where(Message.id == message_id)
+    )
+    if not current_user.is_admin:
+        msg_stmt = msg_stmt.where(Conversation.owner_id == current_user.id)
+    msg = (await db.execute(msg_stmt)).scalar_one_or_none()
+    if not msg:
+        raise HTTPException(404, "Mensagem não encontrada")
+
     await db.execute(
         delete(MessageTag).where(
             MessageTag.message_id == message_id,

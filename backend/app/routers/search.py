@@ -396,6 +396,15 @@ async def semantic_search(
     Busca sem\u00e2ntica usando pgvector (similaridade de cosseno).
     Fallback para ILIKE se pgvector n\u00e3o dispon\u00edvel.
     """
+    # Verify ownership
+    conv_stmt = select(Conversation).where(Conversation.id == conversation_id)
+    if not current_user.is_admin:
+        conv_stmt = conv_stmt.where(Conversation.owner_id == current_user.id)
+    conv_result = await db.execute(conv_stmt)
+    conv = conv_result.scalar_one_or_none()
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversa não encontrada")
+
     from app.services.semantic_search import get_semantic_search_service
 
     service = get_semantic_search_service()

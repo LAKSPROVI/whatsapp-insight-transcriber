@@ -1,6 +1,7 @@
 """
 Dependency Injection - instâncias singleton dos serviços
 """
+import asyncio
 from typing import Optional
 from app.services.claude_service import ClaudeService
 from app.services.agent_orchestrator import AgentOrchestrator
@@ -8,6 +9,7 @@ from app.services.agent_orchestrator import AgentOrchestrator
 # Singletons globais
 _claude_service: Optional[ClaudeService] = None
 _orchestrator: Optional[AgentOrchestrator] = None
+_orchestrator_lock = asyncio.Lock()
 
 
 def get_claude_service() -> ClaudeService:
@@ -23,7 +25,11 @@ def get_orchestrator_instance() -> Optional[AgentOrchestrator]:
 
 async def get_orchestrator() -> AgentOrchestrator:
     global _orchestrator
-    if _orchestrator is None:
+    if _orchestrator is not None:
+        return _orchestrator
+    async with _orchestrator_lock:
+        if _orchestrator is not None:
+            return _orchestrator
         claude = get_claude_service()
         from app.config import settings
         _orchestrator = AgentOrchestrator(claude, max_agents=settings.MAX_AGENTS)

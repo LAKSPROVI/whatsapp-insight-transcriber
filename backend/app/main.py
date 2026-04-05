@@ -66,21 +66,33 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         super().__init__(app)
         self._requests: dict[str, list[float]] = defaultdict(list)
 
-    def _get_limit(self, path: str) -> tuple[int, int]:
+    def _get_limit(self, path: str) -> tuple[int, int, str]:
+        """Returns (max_requests, window, matched_prefix)."""
         for prefix, limit in _RATE_LIMITS.items():
             if path.startswith(prefix):
-                return limit
-        return _DEFAULT_LIMIT
+                return limit[0], limit[1], prefix
+        return _DEFAULT_LIMIT[0], _DEFAULT_LIMIT[1], "default"
 
     async def dispatch(self, request: Request, call_next):
-        client_ip = request.client.host if request.client else "unknown"
-        path = request.url.path
-        max_requests, window = self._get_limit(path)
+        # Skip CORS preflight requests
+        if request.method == "OPTIONS":
+            return await call_next(request)
 
-        key = f"{client_ip}:{path}"
+        # Extract client IP from X-Forwarded-For header when behind proxy
+        forwarded_for = request.headers.get("x-forwarded-for")
+        if forwarded_for:
+            client_ip = forwarded_for.split(",")[0].strip()
+        else:
+            client_ip = request.client.host if request.client else "unknown"
+
+        path = request.url.path
+        max_requests, window, matched_prefix = self._get_limit(path)
+
+        # Normalize key to use matched rate limit prefix, not raw path
+        key = f"{client_ip}:{matched_prefix}"
         now = time.time()
 
-        # Limpar entradas expiradas
+        # Cleanup old timestamps on every check
         self._requests[key] = [
             t for t in self._requests[key] if now - t < window
         ]
@@ -98,7 +110,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
         self._requests[key].append(now)
 
-        # Limpeza periódica (a cada ~1000 requests)
+        # Periodic cleanup of stale keys
         if sum(len(v) for v in self._requests.values()) > 10000:
             self._cleanup(now)
 
@@ -276,6 +288,15 @@ def create_app(*, lifespan_override=None) -> FastAPI:
     app.add_middleware(GZipMiddleware, minimum_size=1000)
     app.add_middleware(RateLimitMiddleware)
     app.add_middleware(RequestTracingMiddleware)
+
+    @app.middleware("http")
+    async def security_headers(request: Request, call_next):
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-XSS-Protection"] = "1; mode=block"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        return response
 
     instrumentator = setup_instrumentator() if (setup_instrumentator and settings.ENABLE_METRICS) else None
     if instrumentator is not None:

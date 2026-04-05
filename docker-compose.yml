@@ -26,6 +26,8 @@ services:
     container_name: wit_redis
     restart: unless-stopped
     mem_limit: 128m
+    environment:
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
     command: ["sh", "-eu", "-c", "test -n \"$${REDIS_PASSWORD}\"; exec redis-server --requirepass \"$${REDIS_PASSWORD}\""]
     networks:
       - wit_network
@@ -128,9 +130,10 @@ services:
     mem_limit: 128m
     environment:
       - ELASTIC_PASSWORD=${ELASTIC_PASSWORD}
+    ports:
+      - "127.0.0.1:24224:24224"
+      - "127.0.0.1:24224:24224/udp"
     expose:
-      - "24224"
-      - "24224/udp"
       - "2020"
     volumes:
       - ./logging/fluent-bit.conf:/fluent-bit/etc/fluent-bit.conf:ro

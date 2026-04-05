@@ -53,38 +53,44 @@ async def purge_expired_conversations(db: AsyncSession) -> dict:
     errors = []
     
     for conv in expired:
+        # Store file paths before DB deletion
+        extract_path = conv.extract_path
+        upload_path = conv.upload_path
+        conv_id = conv.id
+        conv_session_id = conv.session_id
+        conv_created_at = conv.created_at
+
         try:
-            # Limpar arquivos do disco
-            if conv.extract_path and os.path.exists(conv.extract_path):
-                shutil.rmtree(conv.extract_path, ignore_errors=True)
-            if conv.upload_path and os.path.exists(conv.upload_path):
+            # 1. Delete from DB first and commit
+            await db.delete(conv)
+            await db.commit()
+            purged_count += 1
+
+            # 2. Then delete files on disk (after successful DB commit)
+            if extract_path and os.path.exists(extract_path):
+                shutil.rmtree(extract_path, ignore_errors=True)
+            if upload_path and os.path.exists(upload_path):
                 try:
-                    os.remove(conv.upload_path)
+                    os.remove(upload_path)
                 except OSError:
                     pass
             
-            # Deletar do banco (cascade deleta mensagens, chat_history, agent_jobs)
-            await db.delete(conv)
-            purged_count += 1
-            
             logger.info(
                 "data_retention.conversation_purged",
-                conversation_id=conv.id,
-                session_id=conv.session_id,
-                created_at=conv.created_at.isoformat() if conv.created_at else None,
-                age_days=(now - conv.created_at).days if conv.created_at else None,
+                conversation_id=conv_id,
+                session_id=conv_session_id,
+                created_at=conv_created_at.isoformat() if conv_created_at else None,
+                age_days=(now - conv_created_at).days if conv_created_at else None,
             )
             
         except Exception as e:
-            errors.append({"conversation_id": conv.id, "error": str(e)})
+            await db.rollback()
+            errors.append({"conversation_id": conv_id, "error": str(e)})
             logger.error(
                 "data_retention.purge_error",
-                conversation_id=conv.id,
+                conversation_id=conv_id,
                 error=str(e),
             )
-    
-    if purged_count > 0:
-        await db.commit()
     
     result_info = {
         "purged": purged_count,

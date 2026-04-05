@@ -284,11 +284,11 @@ async def export_user_data(
     conv_result = await db.execute(conv_stmt)
     conversations = conv_result.scalars().all()
 
-    total_messages = 0
-    for conv in conversations:
-        msg_stmt = select(Message).where(Message.conversation_id == conv.id)
-        msg_result = await db.execute(msg_stmt)
-        total_messages += len(msg_result.scalars().all())
+    from sqlalchemy import func as sa_func
+    msg_count_stmt = select(sa_func.count(Message.id)).where(
+        Message.conversation_id.in_([c.id for c in conversations])
+    )
+    total_messages = (await db.execute(msg_count_stmt)).scalar() or 0
 
     # Consentimentos
     consent_stmt = select(UserConsent).where(UserConsent.user_id == current_user.id)

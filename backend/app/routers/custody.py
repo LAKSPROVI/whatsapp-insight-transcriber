@@ -8,8 +8,11 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel
 
+from sqlalchemy import select
+
 from app.database import get_db
 from app.auth import get_current_user, get_current_admin, UserInfo
+from app.models import Conversation
 from app.services.custody_service import CustodyChainService, CertificationService, AuditService
 
 logger = logging.getLogger(__name__)
@@ -93,6 +96,14 @@ async def get_custody_chain(
     current_user: UserInfo = Depends(get_current_user),
 ):
     """Retorna a cadeia de custódia completa de uma conversa."""
+    conv_stmt = select(Conversation).where(Conversation.id == conversation_id)
+    if not current_user.is_admin:
+        conv_stmt = conv_stmt.where(Conversation.owner_id == current_user.id)
+    result = await db.execute(conv_stmt)
+    conv = result.scalar_one_or_none()
+    if not conv:
+        raise HTTPException(404, "Conversa não encontrada")
+
     service = CustodyChainService(db)
     records = await service.get_chain(conversation_id)
     return CustodyChainResponse(
@@ -109,6 +120,14 @@ async def verify_custody_chain(
     current_user: UserInfo = Depends(get_current_user),
 ):
     """Verifica a integridade da cadeia de custódia."""
+    conv_stmt = select(Conversation).where(Conversation.id == conversation_id)
+    if not current_user.is_admin:
+        conv_stmt = conv_stmt.where(Conversation.owner_id == current_user.id)
+    result = await db.execute(conv_stmt)
+    conv = result.scalar_one_or_none()
+    if not conv:
+        raise HTTPException(404, "Conversa não encontrada")
+
     service = CustodyChainService(db)
     result = await service.verify_chain(conversation_id)
 
@@ -135,6 +154,14 @@ async def generate_certificate(
     current_user: UserInfo = Depends(get_current_user),
 ):
     """Gera um certificado de integridade para uma conversa."""
+    conv_stmt = select(Conversation).where(Conversation.id == conversation_id)
+    if not current_user.is_admin:
+        conv_stmt = conv_stmt.where(Conversation.owner_id == current_user.id)
+    result = await db.execute(conv_stmt)
+    conv = result.scalar_one_or_none()
+    if not conv:
+        raise HTTPException(404, "Conversa não encontrada")
+
     service = CertificationService(db)
     try:
         result = await service.generate_certificate(
@@ -202,6 +229,14 @@ async def get_conversation_audit(
     current_user: UserInfo = Depends(get_current_user),
 ):
     """Lista eventos de auditoria de uma conversa específica."""
+    conv_stmt = select(Conversation).where(Conversation.id == conversation_id)
+    if not current_user.is_admin:
+        conv_stmt = conv_stmt.where(Conversation.owner_id == current_user.id)
+    result = await db.execute(conv_stmt)
+    conv = result.scalar_one_or_none()
+    if not conv:
+        raise HTTPException(404, "Conversa não encontrada")
+
     service = AuditService(db)
     events = await service.get_events(
         resource_type="conversation",

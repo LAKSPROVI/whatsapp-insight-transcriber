@@ -4,6 +4,7 @@ API Endpoints - Exportação PDF/DOCX/XLSX/CSV/HTML/JSON e Servir Mídias.
 Permite exportar conversas transcritas em múltiplos formatos profissionais,
 servir arquivos de mídia originais e consultar status dos agentes de IA.
 """
+import asyncio
 import os
 import logging
 import tempfile
@@ -130,8 +131,8 @@ async def export_conversation(
             evidence={"format": request.format},
         )
         await db.commit()
-    except Exception:
-        pass  # Non-blocking
+    except Exception as e:
+        logger.warning("custody.export_event_failed", error=str(e))  # Non-blocking
 
     # Buscar mensagens
     msg_stmt = (
@@ -193,7 +194,7 @@ async def export_conversation(
     # Gerar arquivo
     try:
         exporter = fmt_config["exporter"]()
-        file_bytes = exporter.generate(conv, messages, options)
+        file_bytes = await asyncio.to_thread(exporter.generate, conv, messages, options)
         filename = _build_download_filename(base_name, conv.id, date_suffix, fmt_config["ext"])
         content_type = fmt_config["content_type"]
 
@@ -410,6 +411,6 @@ async def get_agents_status(
         orch = get_orchestrator_instance()
         if orch:
             return orch.get_status()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("agents.status_error", error=str(e))
     return {"message": "Orquestrador não disponível"}

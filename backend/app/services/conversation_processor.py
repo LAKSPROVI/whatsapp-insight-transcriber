@@ -99,8 +99,8 @@ class ConversationProcessor:
                     })
                     if progress_callback:
                         await self._notify_progress(progress_callback, conversation)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("processor.timeout_status_update_failed", error=str(e))
             raise ProcessingError(
                 detail=f"Timeout: processamento excedeu {int(PIPELINE_TIMEOUT/60)} minutos",
                 context={"session_id": session_id},
@@ -677,6 +677,7 @@ class ConversationProcessor:
                 await self.db.refresh(conversation)
                 return
             except Exception as e:
+                await self.db.rollback()
                 if attempt < max_retries:
                     logger.warning(f"Erro ao atualizar conversa (tentativa {attempt + 1}): {e}")
                     await asyncio.sleep(0.5 * (attempt + 1))
