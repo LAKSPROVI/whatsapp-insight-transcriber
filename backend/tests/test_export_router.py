@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession
 from app.models import (
     Conversation, Message, ProcessingStatus, MediaType, SentimentType,
 )
-from app.auth import get_current_user, UserInfo
+from app.auth import get_current_user, get_current_user_or_token, UserInfo
 
 
 # ─── Helper: seed completed conversation ─────────────────────────────────────
@@ -255,6 +255,7 @@ class TestMediaEndpoints:
 
     async def test_media_unauthorized(self, app, seeded_db):
         app.dependency_overrides.pop(get_current_user, None)
+        app.dependency_overrides.pop(get_current_user_or_token, None)
         import httpx
         conv, _ = seeded_db
         transport = httpx.ASGITransport(app=app)
