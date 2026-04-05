@@ -292,258 +292,173 @@ def create_app(*, lifespan_override=None) -> FastAPI:
     app.include_router(tags_router, prefix="/api")
     app.include_router(lgpd_router, prefix="/api")
     app.include_router(dashboard_router, prefix="/api")
+
+    # ─── Exception Handlers ──────────────────────────────────────────────
+    @app.exception_handler(AppBaseException)
+    async def app_exception_handler(request: Request, exc: AppBaseException):
+        error_info = get_error_suggestion(exc=exc)
+        logger.warning(
+            "error.app_exception.handled",
+            error_type=exc.__class__.__name__,
+            error_message=exc.detail,
+            error_code=error_info.get("error_code"),
+            error_suggestion=error_info.get("suggestion"),
+            error_severity=error_info.get("severity"),
+            http_status_code=exc.status_code,
+            http_url=str(request.url.path),
+            http_method=request.method,
+            context=exc.context,
+        )
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=exc.to_dict(),
+        )
+
+    @app.exception_handler(Exception)
+    async def generic_exception_handler(request: Request, exc: Exception):
+        error_info = get_error_suggestion(exc=exc)
+        logger.error(
+            "error.unhandled.critical",
+            error_type=exc.__class__.__name__,
+            error_message=str(exc)[:512],
+            error_code=error_info.get("error_code"),
+            error_suggestion=error_info.get("suggestion"),
+            error_severity="critical",
+            http_url=str(request.url.path),
+            http_method=request.method,
+            stack_trace=traceback.format_exc() if settings.DEBUG else None,
+        )
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": "InternalServerError",
+                "detail": "Ocorreu um erro interno no servidor. Tente novamente mais tarde.",
+                "status_code": 500,
+                "context": {},
+            },
+        )
+
+    # ─── Health Check ────────────────────────────────────────────────────
+    @app.get("/api/health", tags=["health"])
+    async def health_check():
+        from app.services.cache_service import get_cache_stats
+        cache = await get_cache_stats()
+        return {
+            "status": "healthy",
+            "app": settings.APP_NAME,
+            "version": settings.APP_VERSION,
+            "model": settings.CLAUDE_MODEL,
+            "max_agents": settings.MAX_AGENTS,
+            "cache_connected": cache.get("redis_connected", False),
+        }
+
+    @app.get("/api/cache/stats", tags=["health"])
+    async def cache_stats(current_user: UserInfo = Depends(get_current_user)):
+        from app.services.cache_service import get_cache_stats
+        return await get_cache_stats()
+
+    @app.get("/api/health/detailed", tags=["health"])
+    async def detailed_health_check(current_user: UserInfo = Depends(get_current_user)):
+        checks: dict = {}
+        overall_status = "healthy"
+
+        try:
+            from app.database import AsyncSessionLocal
+            async with AsyncSessionLocal() as session:
+                from sqlalchemy import text
+                await session.execute(text("SELECT 1"))
+            checks["database"] = {"status": "ok", "message": "Conexao ativa"}
+        except Exception as e:
+            checks["database"] = {"status": "error", "message": str(e)}
+            overall_status = "degraded"
+
+        try:
+            disk_usage = shutil.disk_usage("/")
+            free_gb = disk_usage.free / (1024 ** 3)
+            total_gb = disk_usage.total / (1024 ** 3)
+            used_percent = ((disk_usage.total - disk_usage.free) / disk_usage.total) * 100
+            checks["disk"] = {
+                "status": "ok" if free_gb > 1.0 else "warning",
+                "free_gb": round(free_gb, 2),
+                "total_gb": round(total_gb, 2),
+                "used_percent": round(used_percent, 1),
+            }
+            if free_gb < 0.5:
+                checks["disk"]["status"] = "critical"
+                overall_status = "degraded"
+        except Exception as e:
+            checks["disk"] = {"status": "error", "message": str(e)}
+
+        try:
+            import resource
+            mem_usage_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
+            checks["memory"] = {"status": "ok", "process_rss_mb": round(mem_usage_mb, 2)}
+        except (ImportError, Exception):
+            try:
+                import psutil
+                process = psutil.Process(os.getpid())
+                mem_mb = process.memory_info().rss / (1024 * 1024)
+                checks["memory"] = {"status": "ok" if mem_mb < 2048 else "warning", "process_rss_mb": round(mem_mb, 2)}
+            except (ImportError, Exception):
+                checks["memory"] = {"status": "unknown", "message": "psutil indisponivel"}
+
+        config_ok = True
+        config_issues: list[str] = []
+        if not settings.ANTHROPIC_API_KEY:
+            config_issues.append("ANTHROPIC_API_KEY nao configurada")
+            config_ok = False
+        if not settings.JWT_SECRET_KEY:
+            config_issues.append("JWT_SECRET_KEY nao configurada")
+            config_ok = False
+        if not settings.SECRET_KEY:
+            config_issues.append("SECRET_KEY nao configurada")
+            config_ok = False
+        checks["config"] = {
+            "status": "ok" if config_ok else "warning",
+            "api_key_configured": bool(settings.ANTHROPIC_API_KEY),
+            "jwt_configured": bool(settings.JWT_SECRET_KEY),
+            "issues": config_issues if config_issues else None,
+        }
+        if not config_ok:
+            overall_status = "degraded"
+
+        checks["storage"] = {
+            "upload_dir_exists": settings.UPLOAD_DIR.exists(),
+            "media_dir_exists": settings.MEDIA_DIR.exists(),
+        }
+
+        try:
+            from app.services.cache_service import get_cache_stats
+            cache_info = await get_cache_stats()
+            checks["cache"] = {
+                "status": "ok" if cache_info.get("redis_connected") else "warning",
+                "redis_connected": cache_info.get("redis_connected", False),
+                "hit_rate": cache_info.get("hit_rate", 0),
+                "keys": cache_info.get("redis_keys", 0),
+            }
+        except Exception as e:
+            checks["cache"] = {"status": "warning", "message": str(e)}
+
+        return {
+            "status": overall_status,
+            "app": settings.APP_NAME,
+            "version": settings.APP_VERSION,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "platform": platform.system(),
+            "python_version": platform.python_version(),
+            "checks": checks,
+        }
+
+    @app.get("/")
+    async def root():
+        return {
+            "message": f"Bem-vindo ao {settings.APP_NAME}",
+            "docs": "/api/docs",
+            "health": "/api/health",
+        }
+
     return app
 
 
 # ─── App ──────────────────────────────────────────────────────────────────────
 app = create_app()
-
-
-# ─── Exception Handlers ──────────────────────────────────────────────────────
-@app.exception_handler(AppBaseException)
-async def app_exception_handler(request: Request, exc: AppBaseException):
-    """Handler para todas as excecoes customizadas da aplicacao."""
-    error_info = get_error_suggestion(exc=exc)
-    logger.warning(
-        "error.app_exception.handled",
-        error_type=exc.__class__.__name__,
-        error_message=exc.detail,
-        error_code=error_info.get("error_code"),
-        error_suggestion=error_info.get("suggestion"),
-        error_severity=error_info.get("severity"),
-        http_status_code=exc.status_code,
-        http_url=str(request.url.path),
-        http_method=request.method,
-        context=exc.context,
-    )
-    return JSONResponse(
-        status_code=exc.status_code,
-        content=exc.to_dict(),
-    )
-
-
-@app.exception_handler(Exception)
-async def generic_exception_handler(request: Request, exc: Exception):
-    """Handler generico para excecoes nao tratadas (500)."""
-    error_info = get_error_suggestion(exc=exc)
-    logger.error(
-        "error.unhandled.critical",
-        error_type=exc.__class__.__name__,
-        error_message=str(exc)[:512],
-        error_code=error_info.get("error_code"),
-        error_suggestion=error_info.get("suggestion"),
-        error_severity="critical",
-        http_url=str(request.url.path),
-        http_method=request.method,
-        stack_trace=traceback.format_exc() if settings.DEBUG else None,
-    )
-    return JSONResponse(
-        status_code=500,
-        content={
-            "error": "InternalServerError",
-            "detail": "Ocorreu um erro interno no servidor. Tente novamente mais tarde.",
-            "status_code": 500,
-            "context": {},
-        },
-    )
-
-
-# ─── Health Check ─────────────────────────────────────────────────────────────
-@app.get("/api/health", tags=["health"])
-async def health_check():
-    """
-    Health check básico da aplicação.
-
-    Retorna o status geral da aplicação, incluindo versão, modelo de IA
-    configurado e estado do cache Redis.
-
-    **Não requer autenticação.**
-
-    **Exemplo de response (200):**
-    ```json
-    {
-        "status": "healthy",
-        "app": "WhatsApp Insight Transcriber",
-        "version": "2.0.0",
-        "model": "claude-sonnet-4-20250514",
-        "max_agents": 20,
-        "cache_connected": true
-    }
-    ```
-    """
-    from app.services.cache_service import get_cache_stats
-    cache = await get_cache_stats()
-    return {
-        "status": "healthy",
-        "app": settings.APP_NAME,
-        "version": settings.APP_VERSION,
-        "model": settings.CLAUDE_MODEL,
-        "max_agents": settings.MAX_AGENTS,
-        "cache_connected": cache.get("redis_connected", False),
-    }
-
-
-@app.get("/api/cache/stats", tags=["health"])
-async def cache_stats(current_user: UserInfo = Depends(get_current_user)):
-    """
-    Retorna estatísticas detalhadas do cache Redis.
-
-    Inclui taxa de acerto (hit rate), número de chaves armazenadas,
-    uso de memória e estado da conexão.
-
-    **Requer autenticação via JWT Bearer Token.**
-    """
-    from app.services.cache_service import get_cache_stats
-    return await get_cache_stats()
-
-
-@app.get("/api/health/detailed", tags=["health"])
-async def detailed_health_check(current_user: UserInfo = Depends(get_current_user)):
-    """
-    Health check detalhado com verificações de infraestrutura.
-
-    Realiza verificações em todos os componentes do sistema:
-    banco de dados, disco, memória, configuração, armazenamento e cache Redis.
-
-    **Não requer autenticação.**
-
-    **Exemplo de response (200):**
-    ```json
-    {
-        "status": "healthy",
-        "app": "WhatsApp Insight Transcriber",
-        "version": "2.0.0",
-        "timestamp": "2026-04-01T10:00:00Z",
-        "platform": "Linux",
-        "python_version": "3.12.0",
-        "checks": {
-            "database": {"status": "ok", "message": "Conexão ativa"},
-            "disk": {"status": "ok", "free_gb": 50.5, "used_percent": 45.2},
-            "memory": {"status": "ok", "process_rss_mb": 256.5},
-            "config": {"status": "ok", "api_key_configured": true},
-            "storage": {"upload_dir_exists": true, "media_dir_exists": true},
-            "cache": {"status": "ok", "redis_connected": true}
-        }
-    }
-    ```
-
-    **Status possíveis:** `healthy`, `degraded`
-    """
-    checks: dict = {}
-    overall_status = "healthy"
-
-    # 1. Verificar banco de dados
-    try:
-        from app.database import AsyncSessionLocal
-        async with AsyncSessionLocal() as session:
-            from sqlalchemy import text
-            await session.execute(text("SELECT 1"))
-        checks["database"] = {"status": "ok", "message": "Conexão ativa"}
-    except Exception as e:
-        checks["database"] = {"status": "error", "message": str(e)}
-        overall_status = "degraded"
-
-    # 2. Verificar disponibilidade de disco
-    try:
-        disk_usage = shutil.disk_usage("/")
-        free_gb = disk_usage.free / (1024 ** 3)
-        total_gb = disk_usage.total / (1024 ** 3)
-        used_percent = ((disk_usage.total - disk_usage.free) / disk_usage.total) * 100
-        checks["disk"] = {
-            "status": "ok" if free_gb > 1.0 else "warning",
-            "free_gb": round(free_gb, 2),
-            "total_gb": round(total_gb, 2),
-            "used_percent": round(used_percent, 1),
-        }
-        if free_gb < 0.5:
-            checks["disk"]["status"] = "critical"
-            overall_status = "degraded"
-    except Exception as e:
-        checks["disk"] = {"status": "error", "message": str(e)}
-
-    # 3. Verificar uso de memória
-    try:
-        import resource
-        mem_usage_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
-        checks["memory"] = {
-            "status": "ok",
-            "process_rss_mb": round(mem_usage_mb, 2),
-        }
-    except (ImportError, Exception):
-        # resource não disponível no Windows; usar psutil se existir
-        try:
-            import psutil
-            process = psutil.Process(os.getpid())
-            mem_info = process.memory_info()
-            mem_mb = mem_info.rss / (1024 * 1024)
-            checks["memory"] = {
-                "status": "ok" if mem_mb < 2048 else "warning",
-                "process_rss_mb": round(mem_mb, 2),
-            }
-        except (ImportError, Exception):
-            checks["memory"] = {
-                "status": "unknown",
-                "message": "psutil não disponível",
-            }
-
-    # 4. Verificar configuração
-    config_ok = True
-    config_issues: list[str] = []
-
-    if not settings.ANTHROPIC_API_KEY:
-        config_issues.append("ANTHROPIC_API_KEY não configurada")
-        config_ok = False
-    if not settings.JWT_SECRET_KEY:
-        config_issues.append("JWT_SECRET_KEY não configurada")
-        config_ok = False
-    if not settings.SECRET_KEY:
-        config_issues.append("SECRET_KEY não configurada")
-        config_ok = False
-
-    checks["config"] = {
-        "status": "ok" if config_ok else "warning",
-        "api_key_configured": bool(settings.ANTHROPIC_API_KEY),
-        "jwt_configured": bool(settings.JWT_SECRET_KEY),
-        "issues": config_issues if config_issues else None,
-    }
-
-    if not config_ok:
-        overall_status = "degraded"
-
-    # 5. Verificar diretórios
-    checks["storage"] = {
-        "upload_dir_exists": settings.UPLOAD_DIR.exists(),
-        "media_dir_exists": settings.MEDIA_DIR.exists(),
-    }
-
-    # 6. Verificar Redis/Cache
-    try:
-        from app.services.cache_service import get_cache_stats
-        cache_info = await get_cache_stats()
-        checks["cache"] = {
-            "status": "ok" if cache_info.get("redis_connected") else "warning",
-            "redis_connected": cache_info.get("redis_connected", False),
-            "hit_rate": cache_info.get("hit_rate", 0),
-            "keys": cache_info.get("redis_keys", 0),
-        }
-    except Exception as e:
-        checks["cache"] = {"status": "warning", "message": str(e)}
-
-    return {
-        "status": overall_status,
-        "app": settings.APP_NAME,
-        "version": settings.APP_VERSION,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "platform": platform.system(),
-        "python_version": platform.python_version(),
-        "checks": checks,
-    }
-
-
-@app.get("/")
-async def root():
-    return {
-        "message": f"Bem-vindo ao {settings.APP_NAME}",
-        "docs": "/api/docs",
-        "health": "/api/health",
-    }
