@@ -10,7 +10,7 @@ import {
 import { cn } from "@/lib/utils";
 import {
   getCustodyChain, verifyCustodyChain, generateCertificate,
-  getAuditEvents,
+  getAuditEvents, verifyCertificate,
   type CustodyRecord, type CertificateResponse, type AuditEvent
 } from "@/lib/api";
 import toast from "react-hot-toast";
